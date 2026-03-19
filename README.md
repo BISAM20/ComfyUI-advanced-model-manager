@@ -62,13 +62,7 @@ Restart ComfyUI.
 
 ## 🎮 How to Use
 
-### Opening the Panel
-Three ways to open the Advanced Model Manager:
-- Click the **📥 Model Downloader** button in the ComfyUI sidebar
-- Press `Ctrl + Shift + M` from anywhere
-- Add the **Advanced Model Manager** node to your graph and click **Open Model Downloader**
-
-#### Adding the node to your graph
+### Adding the node to your graph
 Double-click on an empty area of the ComfyUI canvas to open the node search, type **Advanced Model Manager**, then click the result to place it.
 
 ![Node search](docs/screenshot_node_search.png)
