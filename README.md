@@ -66,7 +66,16 @@ Restart ComfyUI.
 Three ways to open the Advanced Model Manager:
 - Click the **📥 Model Downloader** button in the ComfyUI sidebar
 - Press `Ctrl + Shift + M` from anywhere
-- Add the **Advanced Model Manager** node to your graph and click the button on it
+- Add the **Advanced Model Manager** node to your graph and click **Open Model Downloader**
+
+#### Adding the node to your graph
+Double-click on an empty area of the ComfyUI canvas to open the node search, type **Advanced Model Manager**, then click the result to place it.
+
+![Node search](docs/screenshot_node_search.png)
+
+Once placed, the node shows a live count of all your installed models and a button to open the manager panel:
+
+![Advanced Model Manager node](docs/screenshot_node.png)
 
 ### Browsing & Downloading Models
 1. The left panel lists all HuggingFace repos by author
@@ -107,18 +116,9 @@ Click **Refresh** to rebuild the local file index. The index is what makes insta
 
 ## 📊 Graph Node
 
-Add the **Advanced Model Manager** node to your workflow graph to get a live dashboard:
+Add the **Advanced Model Manager** node to your workflow graph to get a live dashboard showing how many models of each type you have installed. Click **Open Model Downloader** on the node to open the full panel.
 
-```
-┌─────────────────────────────┐
-│   Advanced Model Manager    │
-│  [📥 Open Model Downloader] │
-│  🎨 Diffusion / Checkpoints  5 │
-│  📝 Text Encoders            3 │
-│  🔧 VAE                      2 │
-│  💡 LoRAs                    8 │
-└─────────────────────────────┘
-```
+![Advanced Model Manager node](docs/screenshot_node.png)
 
 Model counts update automatically every 8 seconds.
 
