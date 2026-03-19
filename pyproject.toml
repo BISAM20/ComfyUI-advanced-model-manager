@@ -1,0 +1,17 @@
+[project]
+name = "comfyui-advanced-model-manager"
+version = "1.0.0"
+description = "Advanced Model Manager for ComfyUI — browse, search and download models from HuggingFace and GitHub workflows directly from the ComfyUI interface."
+license = { file = "LICENSE" }
+dependencies = [
+    "huggingface_hub>=0.20.0",
+    "requests>=2.28.0",
+]
+
+[project.urls]
+Repository = "https://github.com/BISAM20/ComfyUI-advanced-model-manager"
+
+[tool.comfy]
+PublisherId = "bisam20"
+DisplayName = "Advanced Model Manager"
+Icon = "https://raw.githubusercontent.com/BISAM20/ComfyUI-advanced-model-manager/main/web/icon.png"

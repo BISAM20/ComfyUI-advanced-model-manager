@@ -1,0 +1,17 @@
+name: Publish to ComfyUI Registry
+
+on:
+  push:
+    tags:
+      - "v*.*.*"   # triggers on version tags like v1.0.0, v1.2.3
+
+jobs:
+  publish-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish to ComfyUI Registry
+        uses: Comfy-Org/publish-node-action@main
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
