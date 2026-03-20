@@ -679,13 +679,13 @@ class ModelDownloaderDialog {
                 group: "comfyorg",
                 icon: "🧩",
                 title: "Comfy-Org Workflows",
-                subtitle: "Blueprints & examples from comfyanonymous",
+                subtitle: "Blueprints, examples & comfy-org workflows",
             },
             {
                 group: "kijai",
                 icon: "⚙️",
                 title: "Kijai Example Workflows",
-                subtitle: "WanVideoWrapper example workflows",
+                subtitle: "WanVideo, HunyuanVideo, LTXVideo, CogVideoX, Mochi, FramePack, FluxTrainer",
             },
         ];
 
