@@ -206,7 +206,7 @@ class ModelDownloaderDialog {
 
         // Search box
         this.searchInput = el("input",{
-            type:"text",placeholder:"🔍  Search repos or files…",
+            type:"text",placeholder:"🔍  Filter repos…",
             style:{flex:"1",minWidth:"160px",padding:"6px 12px",
                 background:"#0d1117",border:"1px solid #30363d",
                 borderRadius:"8px",color:"#e0e0e0",fontSize:"13px"},
@@ -327,7 +327,7 @@ class ModelDownloaderDialog {
         this.leftList.innerHTML="";
         try {
             const [rr,lr] = await Promise.all([
-                fetch("/modeldownloader/repos"),
+                fetch(`/modeldownloader/repos${force ? "?force=1" : ""}`),
                 fetch("/modeldownloader/local_models"),
             ]);
             S.repos      = await rr.json();
@@ -437,37 +437,20 @@ class ModelDownloaderDialog {
     // ── Search ─────────────────────────────────────────────────────────────────
 
     _onSearch() {
+        // Search bar is always a local filter only.
+        // API searches are triggered exclusively via the dedicated buttons.
         S.hfSearchResults = null;
-        const q = S.searchQuery.trim();
+        S.fileSearchResults = null;
+        this._renderLeft();
 
-        // LOCAL mode: just filter in place
-        if (S.browseMode === MODE_LOCAL) {
-            S.fileSearchResults = null;
-            this._renderLeft();
-            if (S.localCategory) this._renderLocalFiles(S.localCategory);
-            return;
-        }
-
-        // WORKFLOW mode: just filter in place
-        if (S.browseMode === MODE_WORKFLOW) {
-            S.fileSearchResults = null;
-            this._renderLeft();
-            if (S.githubWorkflowFiles) this._renderGithubWorkflows(S.githubWorkflowFiles);
-            return;
-        }
-
-        // Empty query → clear search, go back to normal view
-        if (!q) {
-            S.fileSearchResults = null;
-            this._renderLeft();
-            if (S.selectedRepo && S.repoFiles[S.selectedRepo])
-                this._renderFileList(S.repoFiles[S.selectedRepo]);
-            else this._showPlaceholder(true);
-            return;
-        }
-
-        // Otherwise auto-search across all repos
-        this._triggerFileSearch();
+        if (S.browseMode === MODE_LOCAL && S.localCategory)
+            this._renderLocalFiles(S.localCategory);
+        else if (S.browseMode === MODE_WORKFLOW && S.githubWorkflowFiles)
+            this._renderGithubWorkflows(S.githubWorkflowFiles);
+        else if (S.selectedRepo && S.repoFiles[S.selectedRepo])
+            this._renderFileList(S.repoFiles[S.selectedRepo]);
+        else if (!S.searchQuery.trim())
+            this._showPlaceholder(true);
     }
 
     async _triggerFileSearch() {

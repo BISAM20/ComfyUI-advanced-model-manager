@@ -29,9 +29,12 @@ from .model_manager import (
 
 
 async def handle_list_repos(request: web.Request) -> web.Response:
-    """GET /modeldownloader/repos  — sorted by lastModified desc."""
+    """GET /modeldownloader/repos  — sorted by lastModified desc.
+    Pass ?force=1 to bypass the disk cache and re-fetch from HuggingFace.
+    """
+    force = request.rel_url.query.get("force", "0") == "1"
     loop  = asyncio.get_event_loop()
-    repos = await loop.run_in_executor(None, list_all_repos)
+    repos = await loop.run_in_executor(None, list_all_repos, force)
     return web.json_response(repos)
 
 

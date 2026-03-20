@@ -2,6 +2,7 @@
 Model Manager: HuggingFace + GitHub repo scanning, local model scanning,
 file classification, downloading.
 """
+import json
 import os
 import re
 import threading
@@ -10,6 +11,8 @@ import uuid
 import requests
 from pathlib import Path
 from typing import Optional
+
+_REPO_CACHE_FILE = Path(__file__).parent / ".repo_cache.json"
 
 try:
     from huggingface_hub import HfApi
@@ -539,7 +542,14 @@ def get_specific_repo_info(repo_id: str) -> dict:
     }
 
 
-def list_all_repos() -> list[dict]:
+def list_all_repos(force: bool = False) -> list[dict]:
+    # Return cached result unless a forced refresh is requested
+    if not force and _REPO_CACHE_FILE.exists():
+        try:
+            return json.loads(_REPO_CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
     all_repos: list[dict] = []
     seen: set[str] = set()
     for author in TRACKED_AUTHORS:
@@ -553,6 +563,13 @@ def list_all_repos() -> list[dict]:
             seen.add(repo_id)
     # Sort by lastModified descending (blank strings sort last)
     all_repos.sort(key=lambda r: r.get("lastModified") or "", reverse=True)
+
+    # Persist to disk cache
+    try:
+        _REPO_CACHE_FILE.write_text(json.dumps(all_repos, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
     return all_repos
 
 
