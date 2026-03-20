@@ -5,6 +5,7 @@ file classification, downloading.
 import os
 import re
 import threading
+import time
 import uuid
 import requests
 from pathlib import Path
@@ -395,6 +396,7 @@ def build_full_index() -> None:
             except Exception:
                 pass
             _index_status["done"] += 1
+            time.sleep(1.5)   # ~2 HF API calls per repo; stay well under 500 req/300s limit
     except Exception as e:
         _index_status["error"] = str(e)
     finally:
@@ -561,8 +563,22 @@ def list_repo_files(repo_id: str, include_workflows: bool = False) -> list[dict]
     try:
         all_files = list(api.list_repo_files(repo_id))
     except Exception as e:
-        print(f"[ModelDownloader] Error listing files for {repo_id}: {e}")
-        return []
+        err_str = str(e)
+        if "429" in err_str:
+            # Extract retry-after seconds if present, default to 60
+            import re as _re
+            m = _re.search(r"Retry after (\d+) seconds", err_str)
+            wait = int(m.group(1)) if m else 60
+            print(f"[ModelDownloader] Rate limited on {repo_id}, retrying after {wait}s…")
+            time.sleep(wait)
+            try:
+                all_files = list(api.list_repo_files(repo_id))
+            except Exception as e2:
+                print(f"[ModelDownloader] Error listing files for {repo_id} after retry: {e2}")
+                return []
+        else:
+            print(f"[ModelDownloader] Error listing files for {repo_id}: {e}")
+            return []
 
     readme_hints = fetch_readme_hints(repo_id)
     result = []

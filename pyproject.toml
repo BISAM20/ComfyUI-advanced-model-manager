@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-advanced-model-manager"
-version = "1.0.5"
+version = "1.0.6"
 description = "Advanced Model Manager for ComfyUI — browse, search and download models from HuggingFace and GitHub workflows directly from the ComfyUI interface."
 license = { file = "LICENSE" }
 dependencies = [
