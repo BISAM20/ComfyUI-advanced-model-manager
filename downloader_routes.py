@@ -20,6 +20,7 @@ from .model_manager import (
     search_files_across_repos,
     search_hf,
     get_models_dir,
+    get_folder_paths_for,
     get_workflows_dir,
     get_local_model_size,
     delete_local_model,
@@ -195,7 +196,15 @@ async def handle_open_folder(request: web.Request) -> web.Response:
     if folder_name == "workflows":
         target_dir = get_workflows_dir()
     else:
-        target_dir = get_models_dir() / folder_name
+        # Use the first configured path, but if a specific file is requested
+        # find whichever path it actually lives in.
+        paths = get_folder_paths_for(folder_name)
+        target_dir = paths[0]
+        if filename:
+            for p in paths:
+                if (p / filename).exists():
+                    target_dir = p
+                    break
 
     if not target_dir.exists():
         return web.json_response({"error": f"Folder not found: {target_dir}"}, status=404)

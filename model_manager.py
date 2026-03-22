@@ -784,6 +784,23 @@ def get_models_dir() -> Path:
         return Path(__file__).parent.parent.parent / "models"
 
 
+def get_folder_paths_for(folder_name: str) -> list[Path]:
+    """Return all configured paths for a ComfyUI folder type.
+
+    Checks folder_paths.get_folder_paths() first (which includes any paths
+    defined in extra_model_paths.yaml), then falls back to the default
+    models_dir / folder_name.
+    """
+    try:
+        import folder_paths
+        paths = folder_paths.get_folder_paths(folder_name)
+        if paths:
+            return [Path(p) for p in paths]
+    except Exception:
+        pass
+    return [get_models_dir() / folder_name]
+
+
 def get_workflows_dir() -> Path:
     root = Path(__file__).parent.parent.parent
     for c in [root / "user" / "default" / "workflows", root / "workflows"]:
@@ -796,15 +813,31 @@ def get_workflows_dir() -> Path:
 
 def scan_local_models() -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
+
+    # Collect all known folder names: registered ComfyUI types + subfolders of models_dir
+    folder_names: set[str] = set()
+    try:
+        import folder_paths
+        folder_names.update(folder_paths.folder_names_and_paths.keys())
+    except Exception:
+        pass
     models_dir = get_models_dir()
     if models_dir.exists():
-        for folder in models_dir.iterdir():
-            if not folder.is_dir():
-                continue
-            files = [f.name for f in folder.rglob("*")
-                     if f.is_file() and f.suffix.lower() in MODEL_EXTENSIONS]
-            if files:
-                result[folder.name] = files
+        for d in models_dir.iterdir():
+            if d.is_dir():
+                folder_names.add(d.name)
+
+    for folder_name in folder_names:
+        files: list[str] = []
+        for path in get_folder_paths_for(folder_name):
+            if path.exists():
+                files.extend(
+                    f.name for f in path.rglob("*")
+                    if f.is_file() and f.suffix.lower() in MODEL_EXTENSIONS
+                )
+        if files:
+            result[folder_name] = files
+
     wf_dir = get_workflows_dir()
     if wf_dir.exists():
         wf_files = [f.name for f in wf_dir.iterdir()
@@ -819,9 +852,12 @@ def get_local_model_size(folder: str, filename: str) -> int | None:
     try:
         if folder == "workflows":
             p = get_workflows_dir() / filename
-        else:
-            p = get_models_dir() / folder / filename
-        return p.stat().st_size if p.exists() else None
+            return p.stat().st_size if p.exists() else None
+        for path in get_folder_paths_for(folder):
+            p = path / filename
+            if p.exists():
+                return p.stat().st_size
+        return None
     except Exception:
         return None
 
@@ -830,17 +866,20 @@ def delete_local_model(folder: str, filename: str) -> bool:
     """Delete a local model file. Returns True on success."""
     try:
         if folder == "workflows":
-            target = get_workflows_dir() / filename
-        else:
-            target = get_models_dir() / folder / filename
-        # Safety: resolve and confirm it's inside the expected directory
-        target = target.resolve()
-        base = (get_workflows_dir() if folder == "workflows" else get_models_dir() / folder).resolve()
-        if not str(target).startswith(str(base)):
+            target = (get_workflows_dir() / filename).resolve()
+            base = get_workflows_dir().resolve()
+            if not str(target).startswith(str(base)):
+                return False
+            if target.is_file():
+                target.unlink()
+                return True
             return False
-        if target.is_file():
-            target.unlink()
-            return True
+        for search_path in get_folder_paths_for(folder):
+            candidate = (search_path / filename).resolve()
+            base = search_path.resolve()
+            if str(candidate).startswith(str(base)) and candidate.is_file():
+                candidate.unlink()
+                return True
         return False
     except Exception as e:
         print(f"[ModelDownloader] Delete error: {e}")
@@ -873,7 +912,7 @@ def start_download(repo_id: str, filepath: str,
     task_id = str(uuid.uuid4())
 
     dest_dir = get_workflows_dir() if local_folder == "workflows" else \
-               get_models_dir() / local_folder
+               get_folder_paths_for(local_folder)[0]
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / filename
 
