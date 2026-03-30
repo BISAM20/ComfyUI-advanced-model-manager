@@ -27,7 +27,7 @@ TRACKED_AUTHORS = ["Comfy-Org", "Kijai", "city96"]
 
 # Specific HuggingFace repos added regardless of author
 TRACKED_SPECIFIC_REPOS = [
-    "Lightricks/LTX-Video",
+    "Lightricks/LTX-2.3",
     "Wan-AI/Wan2.1",
     # black-forest-labs repos
     "black-forest-labs/FLUX.1-dev",
