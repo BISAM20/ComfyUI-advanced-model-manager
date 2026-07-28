@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
+# Generated at runtime by model_manager.list_all_repos()
+.repo_cache.json

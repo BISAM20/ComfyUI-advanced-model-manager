@@ -27,6 +27,7 @@ from .model_manager import (
     build_full_index,
     get_index_status,
 )
+from .link_resolver import resolve_link
 
 
 async def handle_list_repos(request: web.Request) -> web.Response:
@@ -112,6 +113,26 @@ async def handle_start_download(request: web.Request) -> web.Response:
         return web.json_response({"task_id": task_id, "status": "queued"})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=400)
+
+
+async def handle_resolve_link(request: web.Request) -> web.Response:
+    """POST /modeldownloader/resolve_link  {"url": "..."}
+
+    Recognises a pasted HuggingFace / Civitai / GitHub / direct link and returns
+    the file(s) behind it with the ComfyUI folder each belongs in.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    url = (body.get("url") or "").strip()
+    if not url:
+        return web.json_response({"error": "Missing url"}, status=400)
+
+    loop   = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, resolve_link, url)
+    return web.json_response(result)
 
 
 async def handle_download_status(request: web.Request) -> web.Response:
@@ -275,6 +296,7 @@ def setup_routes():
         app.router.add_get   ("/modeldownloader/local_models",              handle_local_models)
         app.router.add_get   ("/modeldownloader/models_dir",                handle_models_dir)
         app.router.add_post  ("/modeldownloader/download",                  handle_start_download)
+        app.router.add_post  ("/modeldownloader/resolve_link",              handle_resolve_link)
         app.router.add_get   ("/modeldownloader/download_status/{task_id}", handle_download_status)
         app.router.add_get   ("/modeldownloader/downloads",                 handle_all_downloads)
         app.router.add_delete("/modeldownloader/download/{task_id}",        handle_cancel_download)

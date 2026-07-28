@@ -11,6 +11,7 @@ import uuid
 import requests
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 _REPO_CACHE_FILE = Path(__file__).parent / ".repo_cache.json"
 
@@ -499,6 +500,28 @@ def _hf_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _civitai_token() -> Optional[str]:
+    return os.environ.get("CIVITAI_TOKEN") or os.environ.get("CIVITAI_API_KEY")
+
+
+def _civitai_headers() -> dict:
+    token = _civitai_token()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def url_headers(url: str) -> dict:
+    """Auth headers appropriate for the host the URL points at.
+
+    Never send an HF token to civitai (or vice versa) — pick by hostname.
+    """
+    host = (urlparse(url).netloc or "").lower()
+    if host.endswith("huggingface.co") or host.endswith("hf.co"):
+        return _hf_headers()
+    if host.endswith("civitai.com"):
+        return _civitai_headers()
+    return {}
+
+
 def list_author_repos(author: str) -> list[dict]:
     if not HF_AVAILABLE:
         return []
@@ -956,7 +979,7 @@ def _download_worker(task_id: str):
                 _downloads[task_id].update(kw)
 
     try:
-        headers    = _hf_headers() if "github" not in url else {}
+        headers    = url_headers(url)
         resume_pos = 0
         if tmp.exists():
             resume_pos = tmp.stat().st_size
@@ -966,9 +989,7 @@ def _download_worker(task_id: str):
         resp = requests.get(url, stream=True, headers=headers, timeout=30)
 
         if resp.status_code == 416:
-            resp = requests.get(url, stream=True,
-                                headers=_hf_headers() if "github" not in url else {},
-                                timeout=30)
+            resp = requests.get(url, stream=True, headers=url_headers(url), timeout=30)
             resume_pos = 0
 
         resp.raise_for_status()

@@ -38,6 +38,29 @@ function el(tag, props = {}, children = []) {
     return e;
 }
 
+/**
+ * POST JSON and return the parsed object.
+ * Turns non-JSON error bodies (aiohttp's "404: Not Found" / "405: Method Not
+ * Allowed", HTML error pages) into a readable message instead of a JSON.parse
+ * crash — a 404/405 here means the backend routes predate this frontend.
+ */
+async function postJSON(url, body) {
+    const r    = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    const text = await r.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch(_) {}
+    if (data && typeof data === "object") return data;
+
+    if (r.status === 404 || r.status === 405)
+        throw new Error(`${url} is not registered (HTTP ${r.status}) — ` +
+                        `restart ComfyUI so the server picks up the new backend routes.`);
+    throw new Error(`Server returned HTTP ${r.status}: ${text.slice(0, 140)}`);
+}
+
 function addOpt(sel, val, label) {
     const o = document.createElement("option");
     o.value = val; o.textContent = label;
@@ -66,6 +89,12 @@ const CAT_COLOR = { diffusion_models:"#4a9eff",checkpoints:"#7ec8e3",vae:"#c084f
                     upscale_models:"#34d399",clip_vision:"#a78bfa",workflows:"#f472b6" };
 const CAT_ORDER = ["diffusion_models","checkpoints","text_encoders","vae","loras",
                    "controlnet","upscale_models","clip_vision","audio_encoders","ipadapter","workflows"];
+
+// Destinations offered when correcting where a pasted link should be saved
+const DEST_FOLDERS = ["diffusion_models","checkpoints","text_encoders","clip_vision","vae",
+                      "loras","controlnet","upscale_models","embeddings","hypernetworks",
+                      "style_models","ipadapter","audio_encoders","photomaker","gligen",
+                      "diffusers","workflows"];
 
 const MODE_REPO = "repo", MODE_MODEL = "model", MODE_WORKFLOW = "workflow", MODE_LOCAL = "local";
 
@@ -151,6 +180,8 @@ class ModelDownloaderDialog {
 
         this.overlay.appendChild(this.dialog);
         document.body.appendChild(this.overlay);
+
+        this._buildLinkModal();
     }
 
     _buildHeader() {
@@ -226,6 +257,14 @@ class ModelDownloaderDialog {
         );
         this.searchFilesBtn.title = "Search file names across all repos (loads uncached repos)";
         tb.appendChild(this.searchFilesBtn);
+
+        // Paste-a-link button
+        this.linkBtn = btn("🔗 Paste Link",
+            {background:"#1f2f14",border:"1px solid #3d5c26",color:"#a3e635"},
+            ()=>this._showLinkModal()
+        );
+        this.linkBtn.title = "Paste a HuggingFace / Civitai / GitHub / direct link and download it to the right folder";
+        tb.appendChild(this.linkBtn);
 
         // HF live search button
         this.hfSearchBtn = btn("🌐 Search HuggingFace",
@@ -316,6 +355,310 @@ class ModelDownloaderDialog {
         this.dlInner = el("div",{style:{display:"flex",flexDirection:"column",gap:"2px"}});
         this.dlBar.appendChild(this.dlInner);
         this.dialog.appendChild(this.dlBar);
+    }
+
+    // ── Paste-a-link modal ─────────────────────────────────────────────────────
+
+    _buildLinkModal() {
+        this.linkOverlay = el("div",{
+            style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.6)",zIndex:"10000",
+                display:"none",alignItems:"center",justifyContent:"center"},
+        });
+        this.linkOverlay.addEventListener("click",e=>{
+            if (e.target===this.linkOverlay) this._hideLinkModal();
+        });
+
+        const box = el("div",{
+            className:"mdd-dialog",
+            style:{background:"#1a1a2e",color:"#e0e0e0",borderRadius:"12px",
+                border:"1px solid #333",width:"min(760px,94vw)",maxHeight:"88vh",
+                display:"flex",flexDirection:"column",fontFamily:"system-ui,sans-serif",
+                fontSize:"13px",overflow:"hidden",boxShadow:"0 20px 60px rgba(0,0,0,0.6)"},
+        });
+
+        // Header
+        const h = el("div",{
+            style:{padding:"12px 18px",borderBottom:"1px solid #2a2a3e",display:"flex",
+                alignItems:"center",gap:"10px",background:"linear-gradient(135deg,#16213e,#0f3460)"},
+        });
+        h.appendChild(el("span",{style:{fontSize:"18px"}},["🔗"]));
+        h.appendChild(el("span",{style:{fontWeight:"700",fontSize:"15px",color:"#fff",flex:"1"}},
+            ["Download from Link"]));
+        const x = el("button",{style:{background:"none",border:"1px solid #444",borderRadius:"6px",
+            color:"#aaa",cursor:"pointer",padding:"3px 10px",fontSize:"13px"}},["✕"]);
+        x.addEventListener("click",()=>this._hideLinkModal());
+        h.appendChild(x);
+        box.appendChild(h);
+
+        // Input area
+        const top = el("div",{style:{padding:"14px 18px 10px",borderBottom:"1px solid #22223a"}});
+        this.linkInput = el("textarea",{
+            rows:"3",
+            placeholder:"Paste one link per line…\n"+
+                "https://civitai.com/models/12345\n"+
+                "https://huggingface.co/Comfy-Org/flux1-dev/blob/main/flux1-dev-fp8.safetensors",
+            style:{width:"100%",padding:"9px 12px",background:"#0d1117",
+                border:"1px solid #30363d",borderRadius:"8px",color:"#e0e0e0",
+                fontSize:"12px",fontFamily:"ui-monospace,monospace",resize:"vertical",
+                lineHeight:"1.5"},
+        });
+        this.linkInput.addEventListener("keydown",e=>{
+            if (e.key==="Enter" && (e.ctrlKey||e.metaKey)) { e.preventDefault(); this._resolveLinks(); }
+            e.stopPropagation();
+        });
+        top.appendChild(this.linkInput);
+
+        const hintRow = el("div",{style:{display:"flex",alignItems:"center",gap:"10px",marginTop:"9px"}});
+        hintRow.appendChild(el("span",{style:{flex:"1",color:"#556",fontSize:"11px"}},
+            ["HuggingFace · Civitai · GitHub · direct file URL — the folder is detected automatically"]));
+        this.linkResolveBtn = btn("🔎 Resolve",
+            {background:"#0f3460",border:"1px solid #1a5276",color:"#7ec8e3",padding:"6px 16px"},
+            ()=>this._resolveLinks());
+        hintRow.appendChild(this.linkResolveBtn);
+        top.appendChild(hintRow);
+        box.appendChild(top);
+
+        // Results
+        this.linkStatus = el("div",{style:{padding:"12px 18px",color:"#556",fontSize:"12px"}},
+            ["Paste a link above and press Resolve (or Ctrl+Enter)."]);
+        this.linkResults = el("div",{style:{overflowY:"auto",flex:"1",display:"none"}});
+        box.appendChild(this.linkStatus);
+        box.appendChild(this.linkResults);
+
+        // Footer
+        this.linkFooter = el("div",{
+            style:{padding:"10px 18px",borderTop:"1px solid #2a2a3e",background:"#12121f",
+                display:"none",alignItems:"center",gap:"10px"},
+        });
+        this.linkSelectAll = el("input",{type:"checkbox",checked:"checked",
+            style:{cursor:"pointer",accentColor:"#4a9eff"}});
+        this.linkSelectAll.addEventListener("change",()=>{
+            for (const r of this._linkRows)
+                if (!r.started && !r.file.downloaded) r.checkbox.checked = this.linkSelectAll.checked;
+            this._updateLinkFooter();
+        });
+        this.linkFooter.appendChild(this.linkSelectAll);
+        this.linkFooter.appendChild(el("span",{style:{color:"#889",fontSize:"11px",flex:"1"}},["Select all"]));
+        this.linkDownloadBtn = btn("⬇ Download selected",
+            {background:"#0f3460",border:"1px solid #1a5276",color:"#7ec8e3",padding:"6px 16px"},
+            ()=>this._downloadLinkFiles());
+        this.linkFooter.appendChild(this.linkDownloadBtn);
+        box.appendChild(this.linkFooter);
+
+        this.linkOverlay.appendChild(box);
+        document.body.appendChild(this.linkOverlay);
+
+        this._linkRows = [];
+        this._linkEscHandler = e=>{
+            if (e.key==="Escape" && this.linkOverlay.style.display!=="none") {
+                e.stopPropagation();
+                this._hideLinkModal();
+            }
+        };
+    }
+
+    _showLinkModal() {
+        this.linkOverlay.style.display = "flex";
+        document.addEventListener("keydown", this._linkEscHandler, true);
+        setTimeout(()=>this.linkInput.focus(), 30);
+    }
+
+    _hideLinkModal() {
+        this.linkOverlay.style.display = "none";
+        document.removeEventListener("keydown", this._linkEscHandler, true);
+    }
+
+    _resetLinkResults() {
+        this._linkRows = [];
+        this.linkResults.innerHTML = "";
+        this.linkResults.style.display = "none";
+        this.linkFooter.style.display = "none";
+    }
+
+    async _resolveLinks() {
+        const urls = this.linkInput.value.split(/[\r\n]+/).map(s=>s.trim()).filter(Boolean);
+        if (!urls.length) {
+            this.linkStatus.textContent = "Paste at least one link first.";
+            this.linkStatus.style.color = "#fbbf24";
+            return;
+        }
+
+        this._resetLinkResults();
+        this.linkResolveBtn.disabled = true;
+        this.linkResolveBtn.textContent = "🔎 Resolving…";
+        this.linkStatus.style.display = "block";
+        this.linkStatus.style.color = "#556";
+
+        const results = [];
+        for (let i = 0; i < urls.length; i++) {
+            this.linkStatus.textContent = `Resolving ${i+1} of ${urls.length}…`;
+            try {
+                const d = await postJSON("/modeldownloader/resolve_link", {url:urls[i]});
+                results.push({url:urls[i], ...d});
+            } catch(e) {
+                results.push({url:urls[i], error:e.message});
+            }
+        }
+
+        this.linkResolveBtn.disabled = false;
+        this.linkResolveBtn.textContent = "🔎 Resolve";
+        this._renderLinkResults(results);
+    }
+
+    _renderLinkResults(results) {
+        this._resetLinkResults();
+        this.linkResults.style.display = "block";
+
+        let fileCount = 0;
+        for (const res of results) {
+            // Source header
+            const hdr = el("div",{
+                style:{padding:"8px 18px",background:"#12122a",borderTop:"1px solid #1e1e2e",
+                    borderBottom:"1px solid #1e1e2e",display:"flex",alignItems:"center",gap:"9px"}});
+            const badge = {huggingface:"🤗 HuggingFace",civitai:"🎨 Civitai",
+                           github:"🐙 GitHub",direct:"🌐 Direct"}[res.source] || "🔗 Link";
+            hdr.appendChild(el("span",{
+                style:{fontSize:"10px",padding:"2px 7px",background:"#0d1f3a",color:"#7ec8e3",
+                    border:"1px solid #1a5276",borderRadius:"10px",whiteSpace:"nowrap"}},[badge]));
+            hdr.appendChild(el("span",{
+                style:{color:"#c8d6e5",fontSize:"12px",fontWeight:"600",flex:"1",
+                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+                [res.title || res.url]));
+            if (res.page_url) {
+                const a = el("a",{href:res.page_url,target:"_blank",rel:"noopener noreferrer",
+                    title:"Open source page",
+                    style:{color:"#445",textDecoration:"none",fontSize:"12px"}},["🔗"]);
+                a.addEventListener("mouseenter",()=>{ a.style.color="#7ec8e3"; });
+                a.addEventListener("mouseleave",()=>{ a.style.color="#445"; });
+                hdr.appendChild(a);
+            }
+            this.linkResults.appendChild(hdr);
+
+            if (res.error) {
+                this.linkResults.appendChild(el("div",{
+                    style:{padding:"10px 18px",color:"#f87171",fontSize:"12px"}},
+                    [`⚠ ${res.error}`]));
+                this.linkResults.appendChild(el("div",{
+                    style:{padding:"0 18px 10px",color:"#445",fontSize:"11px",
+                        wordBreak:"break-all"}},[res.url]));
+                continue;
+            }
+
+            // A whole repository — hand it to the normal repo browser
+            if (res.kind === "repo") {
+                const row = el("div",{style:{padding:"11px 18px",display:"flex",
+                    alignItems:"center",gap:"10px",borderBottom:"1px solid #14141f"}});
+                row.appendChild(el("span",{style:{flex:"1",color:"#889",fontSize:"12px"}},
+                    ["That is a whole repository — open it to pick files."]));
+                row.appendChild(btn("📂 Open repository",
+                    {background:"#0f3460",border:"1px solid #1a5276",color:"#7ec8e3"},
+                    ()=>{
+                        this._hideLinkModal();
+                        S.hfSearchResults = null;
+                        S.fileSearchResults = null;
+                        this.loadRepoFiles(res.repo_id);
+                    }));
+                this.linkResults.appendChild(row);
+                continue;
+            }
+
+            for (const f of (res.files || [])) {
+                this.linkResults.appendChild(this._linkFileRow(f));
+                fileCount++;
+            }
+        }
+
+        this.linkStatus.style.display = "none";
+        if (fileCount) {
+            this.linkFooter.style.display = "flex";
+            this.linkSelectAll.checked = true;
+            this._updateLinkFooter();
+        }
+    }
+
+    _linkFileRow(f) {
+        const row = el("div",{style:{padding:"9px 18px",borderBottom:"1px solid #14141f",
+            display:"flex",alignItems:"center",gap:"10px"}});
+
+        const cb = el("input",{type:"checkbox",style:{cursor:"pointer",accentColor:"#4a9eff"}});
+        cb.checked  = !f.downloaded;
+        cb.disabled = !!f.downloaded;
+        cb.addEventListener("change",()=>this._updateLinkFooter());
+        row.appendChild(cb);
+
+        const info = el("div",{style:{flex:"1",minWidth:"0"}});
+        info.appendChild(el("div",{
+            style:{color:f.downloaded?"#86efac":"#c8d6e5",fontSize:"13px",
+                fontWeight:f.downloaded?"600":"400",overflow:"hidden",
+                textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+            [(f.downloaded?"✅ ":"") + f.filename]));
+        if (f.note) info.appendChild(el("div",{style:{color:"#445",fontSize:"10px"}},[f.note]));
+        row.appendChild(info);
+
+        row.appendChild(el("span",{
+            style:{color:f.size?"#7ec8e3":"#333",fontSize:"12px",minWidth:"66px",
+                textAlign:"right",fontVariantNumeric:"tabular-nums"}},[fmt(f.size)]));
+
+        // Destination — pre-selected from detection, still editable
+        const sel = el("select",{style:{...this._ss(),maxWidth:"165px"}});
+        const opts = DEST_FOLDERS.includes(f.local_folder)
+            ? DEST_FOLDERS : [f.local_folder, ...DEST_FOLDERS];
+        for (const d of opts) addOpt(sel, d, `${CAT_ICON[d]||"📄"} ${d.replace(/_/g," ")}`);
+        sel.value = f.local_folder;
+        sel.title = "Where this file will be saved";
+        row.appendChild(sel);
+
+        const statusEl = el("span",{style:{fontSize:"11px",color:"#445",minWidth:"64px",
+            textAlign:"right"}},[f.downloaded?"on disk":""]);
+        row.appendChild(statusEl);
+
+        this._linkRows.push({file:f, checkbox:cb, select:sel, statusEl, started:false});
+        return row;
+    }
+
+    _updateLinkFooter() {
+        const n = this._linkRows.filter(r=>r.checkbox.checked && !r.started).length;
+        this.linkDownloadBtn.disabled = n === 0;
+        this.linkDownloadBtn.style.opacity = n === 0 ? "0.5" : "1";
+        this.linkDownloadBtn.textContent = n ? `⬇ Download ${n} file${n!==1?"s":""}` : "⬇ Download selected";
+    }
+
+    async _downloadLinkFiles() {
+        const picked = this._linkRows.filter(r=>r.checkbox.checked && !r.started);
+        if (!picked.length) return;
+
+        this.linkDownloadBtn.disabled = true;
+        this.linkDownloadBtn.textContent = "⏳ Starting…";
+
+        for (const r of picked) {
+            const file = {...r.file, local_folder: r.select.value, category: r.select.value};
+            try {
+                const d = await this.startDownload(file);
+                if (d.task_id) {
+                    r.started = true;
+                    r.checkbox.checked = false;
+                    r.checkbox.disabled = true;
+                    r.select.disabled = true;
+                    r.statusEl.textContent = "⬇ queued";
+                    r.statusEl.style.color = "#7ec8e3";
+                } else {
+                    r.statusEl.textContent = "⚠ failed";
+                    r.statusEl.style.color = "#f87171";
+                    r.statusEl.title = d.error || "";
+                }
+            } catch(e) {
+                r.statusEl.textContent = "⚠ failed";
+                r.statusEl.style.color = "#f87171";
+                r.statusEl.title = e.message;
+            }
+        }
+
+        this._updateLinkFooter();
+        this.linkStatus.style.display = "block";
+        this.linkStatus.style.color = "#86efac";
+        this.linkStatus.textContent =
+            `${picked.length} download${picked.length!==1?"s":""} started — progress is in the Downloads bar.`;
+        this._renderDlBar();
     }
 
     // ── Data loading ───────────────────────────────────────────────────────────
@@ -410,10 +753,8 @@ class ModelDownloaderDialog {
             repo_id:file.repo_id, filepath:file.path,
             local_folder:file.local_folder, filename:file.filename,
         };
-        if (file.github_raw) body.direct_url = file.github_raw;
-        const r  = await fetch("/modeldownloader/download",{
-            method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-        const d  = await r.json();
+        if (file.github_raw || file.direct_url) body.direct_url = file.github_raw || file.direct_url;
+        const d = await postJSON("/modeldownloader/download", body);
         if (d.task_id) {
             // Merge server response with local file info so activeDl matching works immediately
             S.downloads[d.task_id] = {
@@ -1176,9 +1517,15 @@ class ModelDownloaderDialog {
                 async()=>{
                     dlBtn.disabled=true; dlBtn.textContent="⏳…";
                     dlBtn.style.opacity="0.5";
-                    const result=await this.startDownload(f);
-                    // re-render so the row immediately switches to progress+stop view
-                    this._rerender();
+                    try {
+                        await this.startDownload(f);
+                        // re-render so the row immediately switches to progress+stop view
+                        this._rerender();
+                    } catch(e) {
+                        dlBtn.disabled=false; dlBtn.style.opacity="1";
+                        dlBtn.textContent="⬇ Download";
+                        alert("Could not start download: "+e.message);
+                    }
                 });
             dlBtn.addEventListener("mouseenter",()=>{ dlBtn.style.background="#1a5276"; });
             dlBtn.addEventListener("mouseleave",()=>{ dlBtn.style.background="#0f3460"; });

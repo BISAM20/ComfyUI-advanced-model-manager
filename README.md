@@ -8,6 +8,7 @@ A powerful model browser, downloader and manager built directly into ComfyUI. Br
 
 | Feature | Description |
 |---|---|
+| 🔗 **Paste a link** | Paste any HuggingFace, Civitai, GitHub or direct URL — the file type is recognised and it lands in the right folder |
 | 🔍 **Instant cross-repo search** | Type any word and find matching files across ALL repos simultaneously |
 | 📁 **Repository browser** | Repos grouped by author with model-family badges (WanVideo, Flux, LTX, etc.) |
 | ⬇️ **One-click download** | Files go straight to the correct ComfyUI model subfolder automatically |
@@ -77,6 +78,26 @@ Once placed, the node shows a live count of all your installed models and a butt
 3. Each file shows its **size** and whether it is already **downloaded** (✓ checkmark)
 4. Click **↓ Download** to save a file — it goes to the correct ComfyUI subfolder automatically (e.g. `models/diffusion_models/`, `models/loras/`, etc.)
 
+### Downloading from a Link (🔗 Paste Link)
+
+Found a model somewhere else? Click **🔗 Paste Link**, paste the URL, and press **Resolve** (or `Ctrl+Enter`). The file is identified, its size is looked up, and the correct ComfyUI folder is picked automatically — then click **Download**.
+
+Recognised link types:
+
+| You paste | What happens |
+|---|---|
+| `https://civitai.com/models/122359` | Latest version's files, folder from the Civitai model type (LORA → `loras/`, Checkpoint → `checkpoints/`, …) |
+| `https://civitai.com/models/4384?modelVersionId=128713` | That specific version |
+| `https://civitai.com/api/download/models/62833` | The version behind that download link |
+| `https://huggingface.co/<repo>/blob/main/path/file.safetensors` | That single file, classified by path + repo README |
+| `https://huggingface.co/<repo>/resolve/main/…` | Same — `?download=true` suffixes are fine |
+| `https://huggingface.co/<repo>` | Opens the repo in the normal file browser |
+| `Comfy-Org/flux1-dev` | Bare repo ids work too |
+| `https://github.com/<owner>/<repo>/blob/<branch>/file.json` | Downloaded via `raw.githubusercontent.com` |
+| Any direct `.safetensors` / `.gguf` / `.ckpt` / `.pt` / `.json` URL | Filename taken from the URL or `Content-Disposition` |
+
+You can paste **several links at once**, one per line. Every row has a destination dropdown, so if the auto-detection guesses wrong you can correct it before downloading. Files already on disk are marked and skipped.
+
 ### Searching Across All Repos
 Just type in the search box — no button needed. The tool searches every file in every repo:
 - `animate` → finds all files with "animate" in the name across all repos
@@ -130,7 +151,11 @@ The tool automatically classifies files and saves them to the right folder:
 | Text encoder / CLIP files | `models/text_encoders/` or `models/clip/` |
 | Upscaler files | `models/upscale_models/` |
 | ControlNet files | `models/controlnet/` |
+| Embeddings / textual inversions | `models/embeddings/` |
+| Hypernetworks | `models/hypernetworks/` |
 | Workflow `.json` files | `user/default/workflows/` |
+
+Any path you have configured in `extra_model_paths.yaml` is respected. When downloading from a pasted link you can override the detected destination before confirming.
 
 ---
 
@@ -143,7 +168,9 @@ The tool automatically classifies files and saves them to the right folder:
 
 ---
 
-## 🔑 HuggingFace Token (Optional)
+## 🔑 Tokens (Optional)
+
+### HuggingFace
 
 For downloading gated models (e.g. Meta Llama), set your HuggingFace token in your environment:
 
@@ -155,6 +182,16 @@ Or log in via the CLI:
 ```bash
 huggingface-cli login
 ```
+
+### Civitai
+
+Some Civitai models require an account to download. Create an API key in your Civitai account settings and set:
+
+```bash
+export CIVITAI_TOKEN=your_civitai_api_key
+```
+
+Tokens are only ever sent to the host they belong to — your HuggingFace token is never sent to Civitai, and vice versa.
 
 ---
 
