@@ -500,25 +500,15 @@ def _hf_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _civitai_token() -> Optional[str]:
-    return os.environ.get("CIVITAI_TOKEN") or os.environ.get("CIVITAI_API_KEY")
-
-
-def _civitai_headers() -> dict:
-    token = _civitai_token()
-    return {"Authorization": f"Bearer {token}"} if token else {}
-
-
 def url_headers(url: str) -> dict:
     """Auth headers appropriate for the host the URL points at.
 
-    Never send an HF token to civitai (or vice versa) — pick by hostname.
+    Chosen by hostname so the HuggingFace token is only ever sent to
+    HuggingFace, never to whatever host a pasted link happens to name.
     """
     host = (urlparse(url).netloc or "").lower()
     if host.endswith("huggingface.co") or host.endswith("hf.co"):
         return _hf_headers()
-    if host.endswith("civitai.com"):
-        return _civitai_headers()
     return {}
 
 
@@ -983,7 +973,7 @@ def locate_local_file(folder: str, filename: str) -> Optional[Path]:
     by their bare name, so a top-level miss falls back to a recursive walk;
     otherwise files shown in the UI would not be actionable. The walk compares
     names exactly rather than globbing, because model filenames routinely
-    contain glob metacharacters — Civitai names like
+    contain glob metacharacters — names like
     "Abstract Painting - Style [LoRA].safetensors" are common.
     """
     name = Path(filename).name

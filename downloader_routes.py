@@ -178,7 +178,7 @@ async def handle_start_download(request: web.Request) -> web.Response:
 async def handle_resolve_link(request: web.Request) -> web.Response:
     """POST /modeldownloader/resolve_link  {"url": "..."}
 
-    Recognises a pasted HuggingFace / Civitai / GitHub / direct link and returns
+    Recognises a pasted HuggingFace / GitHub / direct link and returns
     the file(s) behind it with the ComfyUI folder each belongs in.
     """
     try:

@@ -9,7 +9,7 @@ A powerful model browser, downloader and manager built directly into ComfyUI. Br
 | Feature | Description |
 |---|---|
 | 🧩 **Workflow models** | Pick a ComfyUI template (or your open graph) and download every model it needs in one click |
-| 🔗 **Paste a link** | Paste any HuggingFace, Civitai, GitHub or direct URL — the file type is recognised and it lands in the right folder |
+| 🔗 **Paste a link** | Paste any HuggingFace, GitHub or direct URL — the file type is recognised and it lands in the right folder |
 | ➜ **Move files** | Landed in the wrong folder? Move it from the Downloaded tab, with a searchable folder picker |
 | 🔍 **Instant cross-repo search** | Type any word and find matching files across ALL repos simultaneously |
 | 📁 **Repository browser** | Repos grouped by author with model-family badges (WanVideo, Flux, LTX, etc.) |
@@ -88,9 +88,6 @@ Recognised link types:
 
 | You paste | What happens |
 |---|---|
-| `https://civitai.com/models/122359` | Latest version's files, folder from the Civitai model type (LORA → `loras/`, Checkpoint → `checkpoints/`, …) |
-| `https://civitai.com/models/4384?modelVersionId=128713` | That specific version |
-| `https://civitai.com/api/download/models/62833` | The version behind that download link |
 | `https://huggingface.co/<repo>/blob/main/path/file.safetensors` | That single file, classified by path + repo README |
 | `https://huggingface.co/<repo>/resolve/main/…` | Same — `?download=true` suffixes are fine |
 | `https://huggingface.co/<repo>` | Opens the repo in the normal file browser |
@@ -221,16 +218,6 @@ Or log in via the CLI:
 ```bash
 huggingface-cli login
 ```
-
-### Civitai
-
-Some Civitai models require an account to download. Create an API key in your Civitai account settings and set:
-
-```bash
-export CIVITAI_TOKEN=your_civitai_api_key
-```
-
-Tokens are only ever sent to the host they belong to — your HuggingFace token is never sent to Civitai, and vice versa.
 
 ---
 

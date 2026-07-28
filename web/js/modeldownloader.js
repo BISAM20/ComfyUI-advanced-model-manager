@@ -280,7 +280,7 @@ class ModelDownloaderDialog {
             {background:"#1f2f14",border:"1px solid #3d5c26",color:"#a3e635"},
             ()=>this._showLinkModal()
         );
-        this.linkBtn.title = "Paste a HuggingFace / Civitai / GitHub / direct link and download it to the right folder";
+        this.linkBtn.title = "Paste a HuggingFace / GitHub / direct link and download it to the right folder";
         tb.appendChild(this.linkBtn);
 
         // HF live search button
@@ -414,8 +414,8 @@ class ModelDownloaderDialog {
         this.linkInput = el("textarea",{
             rows:"3",
             placeholder:"Paste one link per line…\n"+
-                "https://civitai.com/models/12345\n"+
-                "https://huggingface.co/Comfy-Org/flux1-dev/blob/main/flux1-dev-fp8.safetensors",
+                "https://huggingface.co/Comfy-Org/flux1-dev/blob/main/flux1-dev-fp8.safetensors\n"+
+                "https://huggingface.co/Comfy-Org/flux1-dev  (a whole repo works too)",
             style:{width:"100%",padding:"9px 12px",background:"#0d1117",
                 border:"1px solid #30363d",borderRadius:"8px",color:"#e0e0e0",
                 fontSize:"12px",fontFamily:"ui-monospace,monospace",resize:"vertical",
@@ -429,7 +429,7 @@ class ModelDownloaderDialog {
 
         const hintRow = el("div",{style:{display:"flex",alignItems:"center",gap:"10px",marginTop:"9px"}});
         hintRow.appendChild(el("span",{style:{flex:"1",color:"#556",fontSize:"11px"}},
-            ["HuggingFace · Civitai · GitHub · direct file URL — the folder is detected automatically"]));
+            ["HuggingFace · GitHub · direct file URL — the folder is detected automatically"]));
         this.linkResolveBtn = btn("🔎 Resolve",
             {background:"#0f3460",border:"1px solid #1a5276",color:"#7ec8e3",padding:"6px 16px"},
             ()=>this._resolveLinks());
@@ -534,7 +534,7 @@ class ModelDownloaderDialog {
             const hdr = el("div",{
                 style:{padding:"8px 18px",background:"#12122a",borderTop:"1px solid #1e1e2e",
                     borderBottom:"1px solid #1e1e2e",display:"flex",alignItems:"center",gap:"9px"}});
-            const badge = {huggingface:"🤗 HuggingFace",civitai:"🎨 Civitai",
+            const badge = {huggingface:"🤗 HuggingFace",
                            github:"🐙 GitHub",direct:"🌐 Direct"}[res.source] || "🔗 Link";
             hdr.appendChild(el("span",{
                 style:{fontSize:"10px",padding:"2px 7px",background:"#0d1f3a",color:"#7ec8e3",

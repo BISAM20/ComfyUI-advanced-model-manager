@@ -1,15 +1,14 @@
 """
 Resolve a pasted URL into downloadable model files.
 
-Recognises HuggingFace repo/file links, Civitai model/version/download links,
-GitHub blob/raw links and plain direct URLs, then works out which ComfyUI
-model folder each file belongs in.
+Recognises HuggingFace repo/file links, GitHub blob/raw links and plain
+direct URLs, then works out which ComfyUI model folder each file belongs in.
 """
 import re
 import requests
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, unquote
 
 from .model_manager import (
     MODEL_EXTENSIONS,
@@ -18,35 +17,7 @@ from .model_manager import (
     is_workflow_file,
     scan_local_models,
     url_headers,
-    _civitai_headers,
 )
-
-# Civitai model type → ComfyUI folder
-CIVITAI_TYPE_MAP = {
-    "Checkpoint":        "checkpoints",
-    "LORA":              "loras",
-    "LoCon":             "loras",
-    "DoRA":              "loras",
-    "LyCORIS":           "loras",
-    "TextualInversion":  "embeddings",
-    "Hypernetwork":      "hypernetworks",
-    "AestheticGradient": "style_models",
-    "Controlnet":        "controlnet",
-    "ControlNet":        "controlnet",
-    "Upscaler":          "upscale_models",
-    "VAE":               "vae",
-    "MotionModule":      "diffusion_models",
-    "Workflows":         "workflows",
-}
-
-# Civitai per-file type overrides (a Checkpoint version can ship a VAE alongside)
-CIVITAI_FILE_TYPE_MAP = {
-    "VAE":       "vae",
-    "Negative":  "embeddings",
-}
-
-# File types on a Civitai version that are never worth downloading here
-CIVITAI_SKIP_FILE_TYPES = {"Training Data", "Config", "Archive"}
 
 _UA = {"User-Agent": "ComfyUI-ModelDownloader/1.0"}
 
@@ -111,7 +82,7 @@ def _status_error(status: Optional[int], what: str) -> Optional[str]:
         return f"{what} does not exist (HTTP 404) — check the link."
     if status in (401, 403):
         return (f"{what} needs authentication (HTTP {status}) — "
-                f"set HF_TOKEN or CIVITAI_TOKEN, or accept the licence on the model page.")
+                f"set HF_TOKEN, or accept the model licence on its page first.")
     if status >= 400:
         return f"{what} returned HTTP {status}."
     return None
@@ -209,97 +180,6 @@ def _resolve_huggingface(parsed) -> dict:
     }
 
 
-# ── Civitai ───────────────────────────────────────────────────────────────────
-
-def _civitai_get(url: str):
-    resp = requests.get(url, headers={**_UA, **_civitai_headers()}, timeout=20)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _civitai_version_files(version: dict, model_type: str, model_name: str,
-                           model_id) -> list[dict]:
-    base_folder = CIVITAI_TYPE_MAP.get(model_type)
-    files = []
-    for vf in version.get("files") or []:
-        ftype = vf.get("type") or "Model"
-        if ftype in CIVITAI_SKIP_FILE_TYPES:
-            continue
-        name = vf.get("name") or f"{model_name}.safetensors"
-        if Path(name).suffix.lower() not in MODEL_EXTENSIONS | {".json", ".pt"}:
-            continue
-
-        folder = CIVITAI_FILE_TYPE_MAP.get(ftype) or base_folder
-        note   = f"Civitai {model_type}" if folder and base_folder else ""
-        if not folder:
-            folder = _classify_by_name(name)
-            note   = f"Civitai '{model_type}' — destination guessed from filename"
-        elif CIVITAI_FILE_TYPE_MAP.get(ftype):
-            note = f"Civitai {model_type} · {ftype} file"
-
-        size_kb = vf.get("sizeKB")
-        size    = int(size_kb * 1024) if size_kb else None
-        url     = vf.get("downloadUrl") or ""
-        if not url:
-            continue
-
-        files.append(_entry(name, name, folder, url,
-                            f"civitai:{model_id}", size, note))
-    return files
-
-
-def _resolve_civitai(parsed) -> dict:
-    parts = [p for p in parsed.path.split("/") if p]
-    query = parse_qs(parsed.query)
-    if not parts:
-        return {"error": "Unrecognised Civitai link. Paste a /models/… or /api/download/models/… URL."}
-
-    try:
-        # https://civitai.com/api/download/models/<versionId>
-        if parts[:3] == ["api", "download", "models"] and len(parts) >= 4:
-            version_id = parts[3]
-            version    = _civitai_get(f"https://civitai.com/api/v1/model-versions/{version_id}")
-            model      = version.get("model") or {}
-            model_id   = version.get("modelId")
-            page_url   = f"https://civitai.com/models/{model_id}?modelVersionId={version_id}"
-            files      = _civitai_version_files(version, model.get("type") or "Other",
-                                                model.get("name") or "model", model_id)
-            title      = f"{model.get('name','Civitai model')} · {version.get('name','')}".strip(" ·")
-
-        # https://civitai.com/models/<id>[/slug][?modelVersionId=<vid>]
-        elif parts[0] == "models" and len(parts) >= 2:
-            model_id = re.sub(r"\D", "", parts[1])
-            if not model_id:
-                return {"error": "Could not read a Civitai model id from that link."}
-            model    = _civitai_get(f"https://civitai.com/api/v1/models/{model_id}")
-            versions = model.get("modelVersions") or []
-            if not versions:
-                return {"error": "That Civitai model has no downloadable versions."}
-            wanted = (query.get("modelVersionId") or [None])[0]
-            version = next((v for v in versions if str(v.get("id")) == str(wanted)), versions[0])
-            page_url = f"https://civitai.com/models/{model_id}?modelVersionId={version.get('id')}"
-            files    = _civitai_version_files(version, model.get("type") or "Other",
-                                              model.get("name") or "model", model_id)
-            title    = f"{model.get('name','Civitai model')} · {version.get('name','')}".strip(" ·")
-
-        else:
-            return {"error": "Unrecognised Civitai link. Paste a /models/… or /api/download/models/… URL."}
-
-    except requests.HTTPError as e:
-        code = e.response.status_code if e.response is not None else "?"
-        if code == 401:
-            return {"error": "Civitai says this model needs authentication — set CIVITAI_TOKEN."}
-        return {"error": f"Civitai API returned HTTP {code}."}
-    except Exception as e:
-        return {"error": f"Could not reach the Civitai API: {e}"}
-
-    if not files:
-        return {"error": "No downloadable model files on that Civitai version."}
-
-    return {"kind": "files", "source": "civitai", "title": title,
-            "page_url": page_url, "files": files}
-
-
 # ── GitHub ────────────────────────────────────────────────────────────────────
 
 def _resolve_github(parsed) -> dict:
@@ -392,8 +272,6 @@ def resolve_link(raw_url: str) -> dict:
     try:
         if any(host == h or host.endswith("." + h) for h in _HF_HOSTS):
             result = _resolve_huggingface(parsed)
-        elif host.endswith("civitai.com"):
-            result = _resolve_civitai(parsed)
         elif host.endswith("github.com") or host.endswith("githubusercontent.com"):
             result = _resolve_github(parsed)
         else:
