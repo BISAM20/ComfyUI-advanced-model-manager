@@ -145,6 +145,7 @@ const S = {
     githubWorkflowFiles: null,        // cached files for current github workflow group
     collapsedAuthors: new Set(),      // authors whose repo list is collapsed
     localCategory: null,              // selected category in Downloaded tab
+    folderTargets: null,              // [{folder, path}] a file can be moved into
 };
 
 // ── Dialog ────────────────────────────────────────────────────────────────────
@@ -224,6 +225,7 @@ class ModelDownloaderDialog {
             if (S.browseMode === MODE_LOCAL) {
                 const r = await fetch("/modeldownloader/local_models");
                 S.localModels = await r.json();
+                await this._loadFolderTargets();
                 S.localCategory = Object.keys(S.localModels)[0] || null;
                 this._renderLeft();
                 if (S.localCategory) this._renderLocalFiles(S.localCategory);
@@ -1072,6 +1074,9 @@ class ModelDownloaderDialog {
 
     /** Downloaded tab — right panel: files with size + delete button */
     _renderLocalFiles(cat) {
+        // The panel starts behind the placeholder; without this the rows render
+        // into a hidden container and the tab looks empty.
+        this._showPlaceholder(false);
         this.fileListEl.innerHTML="";
         const allFiles = S.localModels[cat]||[];
         const q = S.searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
@@ -1102,6 +1107,17 @@ class ModelDownloaderDialog {
                 overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
                 [filename]);
             row.appendChild(nameEl);
+
+            // Move progress / status, hidden until a move starts
+            const moveStatus=el("span",{style:{display:"none",fontSize:"11px",
+                color:"#7ec8e3",minWidth:"78px",textAlign:"right",
+                fontVariantNumeric:"tabular-nums"}});
+            row.appendChild(moveStatus);
+
+            // ➜ Move to another model folder (workflows are not model files,
+            // so there is no sensible destination for them)
+            if (cat !== "workflows")
+                row.appendChild(this._moveButton(cat, filename, row, moveStatus));
 
             // 📂 Open folder button
             const folderBtn=btn("📂",
@@ -1137,6 +1153,213 @@ class ModelDownloaderDialog {
             row.appendChild(delBtn);
             this.fileListEl.appendChild(row);
         }
+    }
+
+    /** Folder types a file can be moved into (cached for the session). */
+    async _loadFolderTargets() {
+        if (S.folderTargets) return S.folderTargets;
+        try {
+            const r = await fetch("/modeldownloader/folder_targets");
+            const d = await r.json();
+            if (Array.isArray(d) && d.length) S.folderTargets = d;
+        } catch(_) {}
+        // Fall back to the known model folders if the endpoint is unavailable
+        if (!S.folderTargets)
+            S.folderTargets = DEST_FOLDERS
+                .filter(f=>f!=="workflows")
+                .map(f=>({folder:f, path:""}));
+        return S.folderTargets;
+    }
+
+    async _refreshLocal() {
+        try {
+            const r = await fetch("/modeldownloader/local_models");
+            S.localModels = await r.json();
+        } catch(_) {}
+    }
+
+    /**
+     * Move one downloaded file into another model folder.
+     * Same-disk moves finish instantly; a move onto another drive is a copy,
+     * so progress is polled and the row shows it.
+     */
+    async _moveFile(fromFolder, filename, toFolder, row, statusEl) {
+        const label = f => f.replace(/_/g," ");
+        if (!confirm(`Move "${filename}"\n\nfrom  ${label(fromFolder)}\nto    ${label(toFolder)}?`))
+            return false;
+
+        row.style.opacity = "0.6";
+        statusEl.style.display = "inline";
+        statusEl.style.color = "#7ec8e3";
+        statusEl.textContent = "moving…";
+
+        let task;
+        try {
+            task = await postJSON("/modeldownloader/move_model",
+                {from_folder:fromFolder, filename, to_folder:toFolder});
+        } catch(e) {
+            row.style.opacity = "1";
+            statusEl.style.display = "none";
+            alert("Move failed: " + e.message);
+            return false;
+        }
+        if (task.error || !task.task_id) {
+            row.style.opacity = "1";
+            statusEl.style.display = "none";
+            alert("Move failed: " + (task.error || "unknown error"));
+            return false;
+        }
+
+        // Poll until the move settles (instant for same-filesystem moves)
+        let state = task;
+        for (let i = 0; i < 36000; i++) {
+            await new Promise(r=>setTimeout(r, 250));
+            try {
+                const r2 = await fetch(`/modeldownloader/move_status/${task.task_id}`);
+                state = await r2.json();
+            } catch(_) { break; }
+            if (["done","error","cancelled"].includes(state.status)) break;
+            if (state.total_bytes)
+                statusEl.textContent = `moving… ${Math.round(state.progress||0)}%`;
+        }
+
+        row.style.opacity = "1";
+        if (state.status !== "done") {
+            statusEl.style.display = "none";
+            alert(`Move ${state.status||"failed"}: ${state.error||"see console"}`);
+            return false;
+        }
+
+        // Refresh and re-render; the source category may now be empty
+        await this._refreshLocal();
+        if (!S.localModels[S.localCategory])
+            S.localCategory = Object.keys(S.localModels)[0] || null;
+        this._renderLocalLeft();
+        if (S.localCategory) this._renderLocalFiles(S.localCategory);
+        else this._showPlaceholder(true);
+        return true;
+    }
+
+    /** "Move to…" button that opens the searchable folder picker. */
+    _moveButton(cat, filename, row, statusEl) {
+        const b = btn("➜ Move to…",
+            {background:"#0d1117",border:"1px solid #30363d",color:"#c8d6e5",
+             fontSize:"11px",padding:"5px 9px",whiteSpace:"nowrap"});
+        b.title = "Move this file to a different model folder";
+        b.addEventListener("click", e=>{
+            e.stopPropagation();
+            this._openFolderPicker(b, cat, async folder=>{
+                b.disabled = true;
+                await this._moveFile(cat, filename, folder, row, statusEl);
+                b.disabled = false;
+            });
+        });
+        return b;
+    }
+
+    _closeFolderPicker() {
+        const p = this._folderPop;
+        if (!p) return;
+        document.removeEventListener("mousedown", p.onDocDown, true);
+        document.removeEventListener("keydown",  p.onKey,      true);
+        document.removeEventListener("scroll",   p.reposition, true);
+        window.removeEventListener("resize",     p.reposition, true);
+        p.elem.remove();
+        this._folderPop = null;
+    }
+
+    /**
+     * Folder picker with a filter box. A native <select> cannot host a search
+     * field, and there are too many model folders to scroll comfortably.
+     * Positioned fixed so the surrounding scroll panel cannot clip it.
+     */
+    _openFolderPicker(anchor, excludeFolder, onPick) {
+        this._closeFolderPicker();
+        const targets = (S.folderTargets||[]).filter(t=>t.folder !== excludeFolder);
+
+        const pop = el("div",{style:{position:"fixed",zIndex:"10001",width:"272px",
+            background:"#12121f",border:"1px solid #2a2a3e",borderRadius:"8px",
+            boxShadow:"0 12px 32px rgba(0,0,0,0.55)",display:"flex",
+            flexDirection:"column",overflow:"hidden"}});
+
+        const input = el("input",{type:"text",placeholder:"🔍  Filter folders…",
+            style:{margin:"7px 7px 5px",padding:"6px 9px",background:"#0d1117",
+                border:"1px solid #30363d",borderRadius:"6px",color:"#e0e0e0",
+                fontSize:"12px",outline:"none"}});
+        const list  = el("div",{style:{overflowY:"auto",maxHeight:"248px",paddingBottom:"5px"}});
+        const hint  = el("div",{style:{padding:"5px 10px",borderTop:"1px solid #1e1e2e",
+            color:"#3a3a4a",fontSize:"10px"}},["↑↓ to move · Enter to pick · Esc to close"]);
+        pop.appendChild(input); pop.appendChild(list); pop.appendChild(hint);
+        document.body.appendChild(pop);
+
+        let rows = [], active = 0;
+        const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g," ");
+
+        const paint = () => rows.forEach((r,i)=>{
+            r.style.background = i===active ? "#1e3a5f" : "transparent";
+        });
+
+        const choose = folder => { this._closeFolderPicker(); onPick(folder); };
+
+        const render = () => {
+            const words = norm(input.value).split(/\s+/).filter(Boolean);
+            const hits  = targets.filter(t=>{
+                if (!words.length) return true;
+                const hay = norm(`${t.folder} ${(t.aliases||[]).join(" ")}`);
+                return words.every(w=>hay.includes(w));
+            });
+            list.innerHTML = ""; rows = []; active = 0;
+            if (!hits.length) {
+                list.appendChild(el("div",{style:{padding:"14px",color:"#445",
+                    fontSize:"11px",textAlign:"center"}},["No folder matches"]));
+                return;
+            }
+            hits.forEach((t,i)=>{
+                const it = el("div",{style:{padding:"6px 11px",cursor:"pointer",
+                    fontSize:"12px",color:"#c8d6e5",display:"flex",
+                    alignItems:"center",gap:"7px"}});
+                it.appendChild(el("span",{},[CAT_ICON[t.folder]||"📄"]));
+                it.appendChild(el("span",{style:{flex:"1",overflow:"hidden",
+                    textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+                    [t.folder.replace(/_/g," ")]));
+                if (t.path) it.title = t.path;
+                it.addEventListener("mouseenter",()=>{ active=i; paint(); });
+                it.addEventListener("click",()=>choose(t.folder));
+                rows.push(it); list.appendChild(it);
+            });
+            paint();
+        };
+
+        const reposition = () => {
+            const r = anchor.getBoundingClientRect();
+            const h = pop.offsetHeight || 300, w = pop.offsetWidth || 272;
+            let top = r.bottom + 4;
+            if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 4);
+            let left = Math.min(r.right - w, window.innerWidth - w - 8);
+            pop.style.top  = `${Math.max(8, top)}px`;
+            pop.style.left = `${Math.max(8, left)}px`;
+        };
+
+        const onDocDown = e => { if (!pop.contains(e.target)) this._closeFolderPicker(); };
+        const onKey = e => {
+            if (e.key === "Escape")      { e.stopPropagation(); this._closeFolderPicker(); }
+            else if (e.key === "ArrowDown") { e.preventDefault(); if(rows.length){ active=(active+1)%rows.length; paint(); rows[active].scrollIntoView({block:"nearest"}); } }
+            else if (e.key === "ArrowUp")   { e.preventDefault(); if(rows.length){ active=(active-1+rows.length)%rows.length; paint(); rows[active].scrollIntoView({block:"nearest"}); } }
+            else if (e.key === "Enter")     { e.preventDefault(); if(rows.length) rows[active].click(); }
+        };
+
+        input.addEventListener("input", render);
+        // keep ComfyUI's canvas shortcuts from swallowing what is typed here
+        input.addEventListener("keydown", e=>e.stopPropagation());
+        document.addEventListener("mousedown", onDocDown, true);
+        document.addEventListener("keydown",  onKey,      true);
+        document.addEventListener("scroll",   reposition, true);
+        window.addEventListener("resize",     reposition, true);
+
+        this._folderPop = {elem:pop, anchor, onDocDown, onKey, reposition};
+        render();
+        reposition();
+        setTimeout(()=>input.focus(), 20);
     }
 
     _secHead(txt) {
@@ -1686,6 +1909,7 @@ class ModelDownloaderDialog {
     }
 
     hide() {
+        this._closeFolderPicker();   // it lives on document.body, not in the dialog
         this.overlay.style.display="none";
         this.visible=false;
     }

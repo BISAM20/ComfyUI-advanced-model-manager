@@ -9,6 +9,7 @@ A powerful model browser, downloader and manager built directly into ComfyUI. Br
 | Feature | Description |
 |---|---|
 | 🔗 **Paste a link** | Paste any HuggingFace, Civitai, GitHub or direct URL — the file type is recognised and it lands in the right folder |
+| ➜ **Move files** | Landed in the wrong folder? Move it from the Downloaded tab, with a searchable folder picker |
 | 🔍 **Instant cross-repo search** | Type any word and find matching files across ALL repos simultaneously |
 | 📁 **Repository browser** | Repos grouped by author with model-family badges (WanVideo, Flux, LTX, etc.) |
 | ⬇️ **One-click download** | Files go straight to the correct ComfyUI model subfolder automatically |
@@ -118,8 +119,30 @@ Workflows are saved directly to your `ComfyUI/user/default/workflows/` folder.
 
 ### Downloaded Tab (💾)
 Switch to the **💾 Downloaded** tab to see all models currently on disk, organised by category. From here you can:
+- Pick **➜ Move to…** to move a file into a different model folder
 - Click 📂 to open the containing folder in your file manager
 - Click 🗑️ to delete a file
+
+### Moving a File to the Right Folder
+
+Auto-classification occasionally guesses wrong — a LoRA can land in `diffusion_models/`, or a text encoder in `checkpoints/`. Rather than digging through the filesystem, open the **💾 Downloaded** tab, find the file, and click **➜ Move to…**. Confirm the destination and it's moved.
+
+**Finding the destination.** The picker opens with a search box, so you can type instead of scrolling a long list:
+
+- `vae` → `vae`, `vae_approx`
+- `up mod` → `upscale_models`, `latent_upscale_models` — multi-word, order-independent
+- `↑` `↓` to move, `Enter` to pick, `Esc` to close
+
+Search also matches **old folder aliases**, so habits still work: typing `unet` finds `diffusion_models`, and `clip` finds `text_encoders`. Hover any entry to see the real directory it writes to.
+
+**Which folders are offered.** Only directories inside your `ComfyUI/models/` folder, plus anything on a separate drive configured through `extra_model_paths.yaml`. Non-model locations — `custom_nodes/`, per-node asset directories, `configs/`, `user/default/workflows/` — are never offered. Folder types that ComfyUI aliases to the same directory (`diffusion_models` / `unet` / `unet_gguf`, or `clip` / `text_encoders`) collapse into one entry, so a destination never appears twice. Workflow `.json` files have no Move button, since there is nowhere sensible to send them.
+
+**How the move behaves.**
+
+- Moves within the same drive are **instant** and never duplicate the file.
+- Moving onto a different drive (e.g. a path from `extra_model_paths.yaml`) is necessarily a copy, so progress is shown in the row. The original is only deleted once the copy has fully landed, and an interrupted or cancelled move leaves your source file untouched with no partial file at the destination.
+- If a file of the same name already exists at the destination, the move is refused rather than overwriting it.
+- Files kept in subfolders (`models/loras/flux/mylora.safetensors`) can be moved and deleted like any other.
 
 ### Category Filter
 Use the **All Categories** dropdown to filter the repo list and search results to a specific type: Checkpoints, LoRAs, VAE, Text Encoders, Upscalers, etc.

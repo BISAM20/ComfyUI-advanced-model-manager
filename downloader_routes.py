@@ -26,6 +26,11 @@ from .model_manager import (
     delete_local_model,
     build_full_index,
     get_index_status,
+    start_move,
+    get_move,
+    cancel_move,
+    get_folder_bases,
+    list_model_folder_targets,
 )
 from .link_resolver import resolve_link
 
@@ -86,6 +91,60 @@ async def handle_delete_model(request: web.Request) -> web.Response:
     loop = asyncio.get_event_loop()
     ok   = await loop.run_in_executor(None, delete_local_model, folder, filename)
     return web.json_response({"ok": ok})
+
+
+async def handle_move_model(request: web.Request) -> web.Response:
+    """POST /modeldownloader/move_model
+    {"from_folder": "...", "filename": "...", "to_folder": "..."}
+
+    Starts a background move and returns a task id. Problems the user can fix
+    (missing file, name already taken) come back as a 400 straight away.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    from_folder = (body.get("from_folder") or "").strip()
+    to_folder   = (body.get("to_folder") or "").strip()
+    filename    = (body.get("filename") or "").strip()
+    if not from_folder or not to_folder or not filename:
+        return web.json_response(
+            {"error": "from_folder, to_folder and filename are all required"}, status=400)
+
+    loop = asyncio.get_event_loop()
+    try:
+        task_id = await loop.run_in_executor(
+            None, start_move, from_folder, filename, to_folder)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        return web.json_response({"error": f"Could not move file: {e}"}, status=500)
+
+    dest_dir = get_folder_bases(to_folder)[0]
+    return web.json_response({"task_id": task_id, "status": "queued",
+                              "dest_dir": str(dest_dir)})
+
+
+async def handle_move_status(request: web.Request) -> web.Response:
+    """GET /modeldownloader/move_status/{task_id}"""
+    state = get_move(request.match_info["task_id"])
+    if state is None:
+        return web.json_response({"error": "Not found"}, status=404)
+    return web.json_response(state)
+
+
+async def handle_cancel_move(request: web.Request) -> web.Response:
+    """DELETE /modeldownloader/move/{task_id}"""
+    return web.json_response({"cancelled": cancel_move(request.match_info["task_id"])})
+
+
+async def handle_folder_targets(request: web.Request) -> web.Response:
+    """GET /modeldownloader/folder_targets — model folders a file can be moved
+    into, one entry per distinct directory."""
+    loop    = asyncio.get_event_loop()
+    targets = await loop.run_in_executor(None, list_model_folder_targets)
+    return web.json_response(targets)
 
 
 async def handle_models_dir(request: web.Request) -> web.Response:
@@ -307,6 +366,10 @@ def setup_routes():
         app.router.add_get   ("/modeldownloader/readme/{author}/{repo:.*}", handle_readme_hints)
         app.router.add_get   ("/modeldownloader/open_folder",               handle_open_folder)
         app.router.add_delete("/modeldownloader/model",                      handle_delete_model)
+        app.router.add_post  ("/modeldownloader/move_model",                  handle_move_model)
+        app.router.add_get   ("/modeldownloader/move_status/{task_id}",       handle_move_status)
+        app.router.add_delete("/modeldownloader/move/{task_id}",              handle_cancel_move)
+        app.router.add_get   ("/modeldownloader/folder_targets",              handle_folder_targets)
         app.router.add_post  ("/modeldownloader/build_index",                handle_build_index)
         app.router.add_get   ("/modeldownloader/index_status",               handle_index_status)
 

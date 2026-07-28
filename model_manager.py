@@ -885,25 +885,136 @@ def get_local_model_size(folder: str, filename: str) -> int | None:
         return None
 
 
+# Folder types that are not model stores, so never a move destination
+NON_MODEL_FOLDERS = {"custom_nodes", "configs", "workflows"}
+
+# When several folder types alias the same directory, prefer these names —
+# they are what the rest of the UI calls those destinations.
+CANONICAL_FOLDERS = [
+    "diffusion_models", "checkpoints", "text_encoders", "clip_vision", "vae",
+    "loras", "controlnet", "upscale_models", "embeddings", "hypernetworks",
+    "style_models", "ipadapter", "audio_encoders", "photomaker", "gligen",
+    "diffusers", "model_patches", "vae_approx", "classifiers",
+]
+
+
+def _preferred_alias(aliases: list[str], path: Path) -> str:
+    """Pick one display name for a directory several folder types point at."""
+    for canonical in CANONICAL_FOLDERS:
+        if canonical in aliases:
+            return canonical
+    if path.name in aliases:
+        return path.name
+    return sorted(aliases, key=lambda a: (len(a), a))[0]
+
+
+def list_model_folder_targets() -> list[dict]:
+    """Folder types a model file can be moved into.
+
+    Limited to directories inside the ComfyUI models folder, plus anything on
+    a separate drive configured through extra_model_paths.yaml. This keeps out
+    non-model locations such as custom_nodes/, per-node asset directories and
+    user/default/workflows/. Folder types that alias the same directory (e.g.
+    diffusion_models / unet / unet_gguf) collapse into a single entry, so the
+    same destination is never offered more than once.
+    """
+    models_dir = get_models_dir()
+    try:
+        models_root = models_dir.resolve()
+        base_dir    = models_root.parent
+    except Exception:
+        return []
+
+    names: set[str] = set()
+    try:
+        import folder_paths
+        names.update(folder_paths.folder_names_and_paths.keys())
+    except Exception:
+        pass
+    if models_dir.exists():
+        names.update(d.name for d in models_dir.iterdir() if d.is_dir())
+    names -= NON_MODEL_FOLDERS
+
+    by_path: dict[Path, list[str]] = {}
+    for name in names:
+        try:
+            resolved = get_folder_bases(name)[0].resolve()
+        except Exception:
+            continue
+        inside_models = resolved.is_relative_to(models_root)
+        # A path outside the ComfyUI install is an extra_model_paths drive;
+        # one inside the install but outside models/ is not a model store.
+        external = not resolved.is_relative_to(base_dir)
+        if inside_models or external:
+            by_path.setdefault(resolved, []).append(name)
+
+    targets = [
+        {"folder": _preferred_alias(aliases, path),
+         "path":   str(path),
+         "aliases": sorted(aliases)}
+        for path, aliases in by_path.items()
+    ]
+    targets.sort(key=lambda t: t["folder"].lower())
+    return targets
+
+
+def _is_within(candidate: Path, base: Path) -> bool:
+    """True if candidate sits inside base (no string-prefix false positives)."""
+    try:
+        return candidate.resolve().is_relative_to(base.resolve())
+    except Exception:
+        return False
+
+
+def get_folder_bases(folder: str) -> list[Path]:
+    """Every directory a given ComfyUI folder type can live in."""
+    if folder == "workflows":
+        return [get_workflows_dir()]
+    return get_folder_paths_for(folder)
+
+
+def locate_local_file(folder: str, filename: str) -> Optional[Path]:
+    """Find an existing file in one of `folder`'s configured paths.
+
+    `filename` must be a bare name — anything with path separators is rejected
+    rather than resolved, so a crafted name cannot escape the model folders.
+
+    scan_local_models() lists nested files (models/loras/flux/x.safetensors)
+    by their bare name, so a top-level miss falls back to a recursive walk;
+    otherwise files shown in the UI would not be actionable. The walk compares
+    names exactly rather than globbing, because model filenames routinely
+    contain glob metacharacters — Civitai names like
+    "Abstract Painting - Style [LoRA].safetensors" are common.
+    """
+    name = Path(filename).name
+    if not name or name != filename:
+        return None
+
+    bases = get_folder_bases(folder)
+    for base in bases:
+        candidate = base / name
+        if candidate.is_file() and _is_within(candidate, base):
+            return candidate
+
+    for base in bases:
+        if not base.is_dir():
+            continue
+        for dirpath, _dirs, files in os.walk(base):
+            if name in files:
+                candidate = Path(dirpath) / name
+                if candidate.is_file() and _is_within(candidate, base):
+                    return candidate
+    return None
+
+
 def delete_local_model(folder: str, filename: str) -> bool:
     """Delete a local model file. Returns True on success."""
     try:
-        if folder == "workflows":
-            target = (get_workflows_dir() / filename).resolve()
-            base = get_workflows_dir().resolve()
-            if not str(target).startswith(str(base)):
-                return False
-            if target.is_file():
-                target.unlink()
-                return True
+        target = locate_local_file(folder, filename)
+        if target is None:
             return False
-        for search_path in get_folder_paths_for(folder):
-            candidate = (search_path / filename).resolve()
-            base = search_path.resolve()
-            if str(candidate).startswith(str(base)) and candidate.is_file():
-                candidate.unlink()
-                return True
-        return False
+        target.unlink()
+        return True
     except Exception as e:
         print(f"[ModelDownloader] Delete error: {e}")
         return False
@@ -911,6 +1022,144 @@ def delete_local_model(folder: str, filename: str) -> bool:
 
 def get_download_url(repo_id: str, filepath: str, revision: str = "main") -> str:
     return f"https://huggingface.co/{repo_id}/resolve/{revision}/{filepath}"
+
+
+# ── Moving files between model folders ────────────────────────────────────────
+
+_moves: dict = {}
+_moves_lock = threading.Lock()
+
+_MOVE_CHUNK = 8 * 1024 * 1024
+
+
+def get_moves() -> dict:
+    with _moves_lock:
+        return dict(_moves)
+
+
+def get_move(task_id: str) -> Optional[dict]:
+    with _moves_lock:
+        return _moves.get(task_id)
+
+
+def cancel_move(task_id: str) -> bool:
+    """Cancel an in-progress cross-filesystem copy. A same-disk move is atomic
+    and finishes before this can take effect."""
+    with _moves_lock:
+        if task_id in _moves and _moves[task_id]["status"] in ("queued", "moving"):
+            _moves[task_id]["status"] = "cancelled"
+            return True
+    return False
+
+
+def plan_move(from_folder: str, filename: str, to_folder: str) -> dict:
+    """Validate a move and return {src, dest}. Raises ValueError if not possible."""
+    if not to_folder:
+        raise ValueError("No destination folder given.")
+    if from_folder == to_folder:
+        raise ValueError(f"'{filename}' is already in {to_folder}.")
+
+    src = locate_local_file(from_folder, filename)
+    if src is None:
+        raise ValueError(f"'{filename}' was not found in {from_folder}.")
+
+    dest_dir = get_folder_bases(to_folder)[0]
+    dest     = dest_dir / src.name
+    if not _is_within(dest_dir / src.name, dest_dir):
+        raise ValueError("Invalid destination.")
+    if dest.exists():
+        raise ValueError(f"'{src.name}' already exists in {to_folder}.")
+    if src.resolve() == dest.resolve():
+        raise ValueError(f"'{src.name}' is already in that location.")
+    return {"src": src, "dest": dest, "dest_dir": dest_dir}
+
+
+def start_move(from_folder: str, filename: str, to_folder: str) -> str:
+    """Begin moving a local file to another model folder. Returns a task id.
+
+    Raises ValueError for problems the user can act on (missing source, name
+    collision), so those surface immediately instead of as a failed task.
+    """
+    plan    = plan_move(from_folder, filename, to_folder)
+    task_id = str(uuid.uuid4())
+    state = {
+        "task_id": task_id, "filename": plan["src"].name,
+        "from_folder": from_folder, "to_folder": to_folder,
+        "src": str(plan["src"]), "dest": str(plan["dest"]),
+        "status": "queued", "progress": 0.0,
+        "moved_bytes": 0, "total_bytes": plan["src"].stat().st_size,
+        "error": None,
+    }
+    with _moves_lock:
+        _moves[task_id] = state
+
+    threading.Thread(target=_move_worker, args=(task_id,), daemon=True).start()
+    return task_id
+
+
+def _move_worker(task_id: str):
+    import errno
+    import shutil
+
+    with _moves_lock:
+        state = _moves.get(task_id)
+    if not state:
+        return
+
+    src  = Path(state["src"])
+    dest = Path(state["dest"])
+    tmp  = Path(str(dest) + ".part")
+
+    def upd(**kw):
+        with _moves_lock:
+            if task_id in _moves:
+                _moves[task_id].update(kw)
+
+    def cancelled() -> bool:
+        with _moves_lock:
+            return _moves.get(task_id, {}).get("status") == "cancelled"
+
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        upd(status="moving")
+
+        # Same filesystem — instant, and the file is never duplicated on disk.
+        try:
+            os.replace(src, dest)
+            upd(status="done", progress=100.0, moved_bytes=state["total_bytes"])
+            return
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                raise
+
+        # Different filesystem (e.g. an extra_model_paths.yaml drive): copy in
+        # chunks to a .part file so an interruption never leaves a truncated
+        # model sitting where ComfyUI would try to load it.
+        total  = state["total_bytes"]
+        copied = 0
+        with open(src, "rb") as fi, open(tmp, "wb") as fo:
+            while True:
+                chunk = fi.read(_MOVE_CHUNK)
+                if not chunk:
+                    break
+                if cancelled():
+                    fo.close()
+                    tmp.unlink(missing_ok=True)
+                    return
+                fo.write(chunk)
+                copied += len(chunk)
+                upd(moved_bytes=copied,
+                    progress=min(copied / total * 100, 100) if total else 0)
+
+        shutil.copystat(src, tmp)
+        tmp.rename(dest)
+        src.unlink()                      # only remove the source once the copy landed
+        upd(status="done", progress=100.0)
+
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        upd(status="error", error=str(e))
+        print(f"[ModelDownloader] Move error for {task_id}: {e}")
 
 
 # ── Download state ────────────────────────────────────────────────────────────
