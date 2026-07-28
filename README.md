@@ -8,6 +8,7 @@ A powerful model browser, downloader and manager built directly into ComfyUI. Br
 
 | Feature | Description |
 |---|---|
+| 🧩 **Workflow models** | Pick a ComfyUI template (or your open graph) and download every model it needs in one click |
 | 🔗 **Paste a link** | Paste any HuggingFace, Civitai, GitHub or direct URL — the file type is recognised and it lands in the right folder |
 | ➜ **Move files** | Landed in the wrong folder? Move it from the Downloaded tab, with a searchable folder picker |
 | 🔍 **Instant cross-repo search** | Type any word and find matching files across ALL repos simultaneously |
@@ -109,6 +110,21 @@ Search is **case-insensitive** and normalises underscores, dashes and dots to sp
 
 ### HuggingFace Live Search
 Click **🌐 Search HuggingFace** to search the live HuggingFace index for repos not already in the local index. Results are clickable and load their file list exactly like local repos.
+
+### Workflow Models Tab (🧩)
+
+ComfyUI's built-in templates embed the download link and target folder for every model they need. Switch to **🧩 Workflow Models** and the tool reads that metadata for you — no copying links by hand.
+
+Pick a source in the left panel:
+
+- **📌 Current graph** — scans the workflow open on your canvas right now
+- **Any ComfyUI template** — all 364 bundled templates, grouped by category (Image, Video, Audio, 3D Model, Utility…). Type in the search box to filter by title, description or model name.
+
+The right panel then lists every model the workflow needs, grouped by type, showing its size, its destination folder, and whether it is already on disk. Download them individually, or hit **⬇ Download all missing** to fetch everything you don't have in one click.
+
+Models inside **subgraphs** are found too — several newer templates keep their loaders nested there, where a surface-level scan would miss them entirely.
+
+Not every template declares model metadata (roughly 162 of the bundled ones do). If a workflow has none, the tab says so and points you at 🔗 Paste Link instead.
 
 ### Workflows Tab
 Switch to **📋 Workflows** mode to browse and download workflow JSON files from:

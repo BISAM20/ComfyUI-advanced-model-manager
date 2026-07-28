@@ -33,6 +33,7 @@ from .model_manager import (
     list_model_folder_targets,
 )
 from .link_resolver import resolve_link
+from .workflow_models import extract_workflow_models, fetch_workflow
 
 
 async def handle_list_repos(request: web.Request) -> web.Response:
@@ -192,6 +193,43 @@ async def handle_resolve_link(request: web.Request) -> web.Response:
     loop   = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, resolve_link, url)
     return web.json_response(result)
+
+
+async def handle_workflow_models(request: web.Request) -> web.Response:
+    """POST /modeldownloader/workflow_models
+
+    Body is either {"workflow": {...}} for a graph the client already has, or
+    {"url": "..."} to load one (a /templates/<name>.json path, or any link).
+    Returns the model files that workflow needs, with download URLs.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    workflow = body.get("workflow")
+    url      = (body.get("url") or "").strip()
+    sizes    = body.get("sizes", True)
+    loop     = asyncio.get_event_loop()
+
+    if workflow is None and url:
+        if url.startswith("/"):
+            url = f"http://127.0.0.1:{request.url.port or 8188}{url}"
+        try:
+            workflow = await loop.run_in_executor(None, fetch_workflow, url)
+        except Exception as e:
+            return web.json_response({"error": f"Could not load workflow: {e}"}, status=400)
+
+    if not isinstance(workflow, dict):
+        return web.json_response({"error": "No workflow given"}, status=400)
+
+    try:
+        models = await loop.run_in_executor(
+            None, extract_workflow_models, workflow, bool(sizes))
+    except Exception as e:
+        return web.json_response({"error": f"Could not read workflow: {e}"}, status=500)
+
+    return web.json_response({"models": models, "count": len(models)})
 
 
 async def handle_download_status(request: web.Request) -> web.Response:
@@ -356,6 +394,7 @@ def setup_routes():
         app.router.add_get   ("/modeldownloader/models_dir",                handle_models_dir)
         app.router.add_post  ("/modeldownloader/download",                  handle_start_download)
         app.router.add_post  ("/modeldownloader/resolve_link",              handle_resolve_link)
+        app.router.add_post  ("/modeldownloader/workflow_models",           handle_workflow_models)
         app.router.add_get   ("/modeldownloader/download_status/{task_id}", handle_download_status)
         app.router.add_get   ("/modeldownloader/downloads",                 handle_all_downloads)
         app.router.add_delete("/modeldownloader/download/{task_id}",        handle_cancel_download)

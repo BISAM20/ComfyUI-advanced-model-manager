@@ -96,7 +96,10 @@ const DEST_FOLDERS = ["diffusion_models","checkpoints","text_encoders","clip_vis
                       "style_models","ipadapter","audio_encoders","photomaker","gligen",
                       "diffusers","workflows"];
 
-const MODE_REPO = "repo", MODE_MODEL = "model", MODE_WORKFLOW = "workflow", MODE_LOCAL = "local";
+const MODE_REPO = "repo", MODE_MODEL = "model", MODE_WORKFLOW = "workflow",
+      MODE_LOCAL = "local", MODE_WFMODELS = "wfmodels";
+
+const WF_GRAPH_KEY = "__graph__";
 
 // Keywords used to guess a repo's category when its files haven't been loaded yet
 const CAT_KEYWORDS = {
@@ -146,6 +149,11 @@ const S = {
     collapsedAuthors: new Set(),      // authors whose repo list is collapsed
     localCategory: null,              // selected category in Downloaded tab
     folderTargets: null,              // [{folder, path}] a file can be moved into
+    wfTemplates: null,                // ComfyUI template index
+    wfSelected: null,                 // selected workflow source key
+    wfTitle: "",                      // display name of that source
+    workflowModelFiles: null,         // models detected in the selected workflow
+    collapsedWfCats: new Set(),       // collapsed template categories
 };
 
 // ── Dialog ────────────────────────────────────────────────────────────────────
@@ -215,6 +223,7 @@ class ModelDownloaderDialog {
         addOpt(this.modeSelect, MODE_REPO,     "📁 Repository");
         addOpt(this.modeSelect, MODE_MODEL,    "🏷️ By Model");
         addOpt(this.modeSelect, MODE_WORKFLOW, "📋 Workflows");
+        addOpt(this.modeSelect, MODE_WFMODELS, "🧩 Workflow Models");
         addOpt(this.modeSelect, MODE_LOCAL,    "💾 Downloaded");
         this.modeSelect.addEventListener("change",async()=>{
             S.browseMode = this.modeSelect.value;
@@ -222,7 +231,13 @@ class ModelDownloaderDialog {
             S.fileSearchResults = null;
             S.hfSearchResults = null;
             S.githubWorkflowFiles = null;
-            if (S.browseMode === MODE_LOCAL) {
+            S.workflowModelFiles = null;
+            S.wfSelected = null;
+            if (S.browseMode === MODE_WFMODELS) {
+                await this._loadTemplateIndex();
+                this._renderLeft();
+                this._showPlaceholder(true);
+            } else if (S.browseMode === MODE_LOCAL) {
                 const r = await fetch("/modeldownloader/local_models");
                 S.localModels = await r.json();
                 await this._loadFolderTargets();
@@ -296,7 +311,9 @@ class ModelDownloaderDialog {
         this.catSelect.addEventListener("change",()=>{
             S.catFilter = this.catSelect.value;
             this._renderLeft();
-            if (S.githubWorkflowFiles) this._renderGithubWorkflows(S.githubWorkflowFiles);
+            if (S.browseMode===MODE_WFMODELS && S.workflowModelFiles)
+                this._renderWorkflowModels(S.workflowModelFiles);
+            else if (S.githubWorkflowFiles) this._renderGithubWorkflows(S.githubWorkflowFiles);
             else if (S.selectedRepo && S.repoFiles[S.selectedRepo])
                 this._renderFileList(S.repoFiles[S.selectedRepo]);
         });
@@ -788,6 +805,8 @@ class ModelDownloaderDialog {
 
         if (S.browseMode === MODE_LOCAL && S.localCategory)
             this._renderLocalFiles(S.localCategory);
+        else if (S.browseMode === MODE_WFMODELS && S.workflowModelFiles)
+            this._renderWorkflowModels(S.workflowModelFiles);
         else if (S.browseMode === MODE_WORKFLOW && S.githubWorkflowFiles)
             this._renderGithubWorkflows(S.githubWorkflowFiles);
         else if (S.selectedRepo && S.repoFiles[S.selectedRepo])
@@ -863,6 +882,7 @@ class ModelDownloaderDialog {
         if      (S.browseMode===MODE_REPO)     this._renderRepoList();
         else if (S.browseMode===MODE_MODEL)    this._renderModelList();
         else if (S.browseMode===MODE_WORKFLOW) this._renderWorkflowSources();
+        else if (S.browseMode===MODE_WFMODELS) this._renderWorkflowSourcesList();
         else if (S.browseMode===MODE_LOCAL)    this._renderLocalLeft();
     }
 
@@ -1038,6 +1058,237 @@ class ModelDownloaderDialog {
                 this.loadGithubWorkflows(src.group);
             });
             this.leftList.appendChild(item);
+        }
+    }
+
+    // ── Workflow Models ────────────────────────────────────────────────────────
+
+    async _loadTemplateIndex() {
+        // Only treat a non-empty result as cached: the index can fail while
+        // ComfyUI is still starting up, and caching [] would leave the tab
+        // permanently empty for the rest of the session.
+        if (S.wfTemplates && S.wfTemplates.length) return S.wfTemplates;
+        this.leftStatus.textContent = "Loading ComfyUI templates…";
+        this.leftStatus.style.display = "block";
+        this._wfTemplateError = null;
+        try {
+            const r = await fetch("/templates/index.json");
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const d = await r.json();
+            if (!Array.isArray(d)) throw new Error("unexpected template index format");
+            S.wfTemplates = d;
+        } catch(e) {
+            S.wfTemplates = [];
+            this._wfTemplateError = e.message;
+        }
+        this.leftStatus.style.display = "none";
+        return S.wfTemplates;
+    }
+
+    /** Left panel: the current graph plus every ComfyUI template, by category. */
+    _renderWorkflowSourcesList() {
+        this.leftList.innerHTML = "";
+        const q = S.searchQuery.trim().toLowerCase();
+
+        this.leftList.appendChild(this._secHead("Workflow source"));
+
+        // The graph you are looking at right now
+        const graphItem = el("div",{
+            "data-wf-item": WF_GRAPH_KEY,
+            style:{padding:"9px 14px",cursor:"pointer",borderBottom:"1px solid #1a1a2a",
+                background:S.wfSelected===WF_GRAPH_KEY?"#1e3a5f":"transparent",
+                display:"flex",alignItems:"center",gap:"8px"},
+        });
+        graphItem.appendChild(el("span",{style:{fontSize:"15px"}},["📌"]));
+        const gi = el("div",{style:{flex:"1"}});
+        gi.appendChild(el("div",{style:{color:"#c8d6e5",fontWeight:"600",fontSize:"12px"}},
+            ["Current graph"]));
+        gi.appendChild(el("div",{style:{color:"#445",fontSize:"10px"}},
+            ["Scan the workflow open on the canvas"]));
+        graphItem.appendChild(gi);
+        graphItem.addEventListener("click",()=>this.loadWorkflowModels(WF_GRAPH_KEY,"Current graph"));
+        this.leftList.appendChild(graphItem);
+
+        // ComfyUI's bundled templates
+        let shown = 0;
+        for (const cat of (S.wfTemplates||[])) {
+            const templates = (cat.templates||[]).filter(t=>{
+                if (!q) return true;
+                return `${t.title||""} ${t.name||""} ${t.description||""} ${(t.models||[]).join(" ")}`
+                    .toLowerCase().includes(q);
+            });
+            if (!templates.length) continue;
+
+            const title     = cat.title || cat.category || "Templates";
+            const collapsed = S.collapsedWfCats.has(title);
+            const head = el("div",{
+                style:{padding:"7px 12px 5px",fontSize:"10px",fontWeight:"700",
+                    color:"#7ec8e3",textTransform:"uppercase",letterSpacing:"0.8px",
+                    borderBottom:"1px solid #1e1e2e",marginTop:"6px",cursor:"pointer",
+                    display:"flex",alignItems:"center",gap:"6px",userSelect:"none"},
+            });
+            head.appendChild(el("span",{style:{fontSize:"11px",
+                transform:collapsed?"rotate(-90deg)":"rotate(0deg)"}},["▾"]));
+            head.appendChild(el("span",{},[`${title} (${templates.length})`]));
+            head.addEventListener("click",()=>{
+                if (S.collapsedWfCats.has(title)) S.collapsedWfCats.delete(title);
+                else S.collapsedWfCats.add(title);
+                this._renderWorkflowSourcesList();
+            });
+            this.leftList.appendChild(head);
+            shown += templates.length;
+            if (collapsed) continue;
+
+            for (const t of templates) {
+                const key = t.name;
+                const item = el("div",{
+                    "data-wf-item": key,
+                    style:{padding:"7px 14px",cursor:"pointer",borderBottom:"1px solid #1a1a2a",
+                        background:S.wfSelected===key?"#1e3a5f":"transparent"},
+                });
+                item.appendChild(el("div",{style:{color:"#c8d6e5",fontSize:"12px",
+                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+                    [t.title || t.name]));
+                if ((t.models||[]).length)
+                    item.appendChild(el("div",{style:{color:"#445",fontSize:"10px",
+                        overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+                        [(t.models||[]).join(", ")]));
+                item.addEventListener("mouseenter",()=>{ if(S.wfSelected!==key) item.style.background="#1a2a3a"; });
+                item.addEventListener("mouseleave",()=>{ if(S.wfSelected!==key) item.style.background="transparent"; });
+                item.addEventListener("click",()=>this.loadWorkflowModels(key, t.title || t.name));
+                this.leftList.appendChild(item);
+            }
+        }
+
+        if (!shown && q) {
+            this.leftList.appendChild(el("div",{style:{padding:"18px",color:"#333",
+                textAlign:"center",fontSize:"12px"}},["No templates match your filter"]));
+        } else if (!(S.wfTemplates||[]).length) {
+            // Loading the index can fail transiently during ComfyUI startup —
+            // let it be retried instead of leaving the tab looking broken.
+            const box = el("div",{style:{padding:"16px 14px",textAlign:"center"}});
+            box.appendChild(el("div",{style:{color:"#666",fontSize:"11px",marginBottom:"9px",
+                lineHeight:"1.5"}},
+                [this._wfTemplateError
+                    ? `Could not load ComfyUI templates (${this._wfTemplateError}).`
+                    : "No ComfyUI templates found."]));
+            box.appendChild(btn("⟳ Retry",
+                {background:"#0f3460",border:"1px solid #1a5276",color:"#7ec8e3"},
+                async()=>{
+                    S.wfTemplates = null;
+                    await this._loadTemplateIndex();
+                    this._renderWorkflowSourcesList();
+                }));
+            this.leftList.appendChild(box);
+        }
+    }
+
+    /** Ask the backend which models a workflow needs, then show them. */
+    async loadWorkflowModels(sourceKey, title) {
+        S.wfSelected = sourceKey;
+        S.wfTitle    = title || sourceKey;
+        S.workflowModelFiles = null;
+        this._renderWorkflowSourcesList();
+        this._showPlaceholder(false);
+        this.fileListEl.innerHTML =
+            `<div style="padding:30px;text-align:center;color:#555">
+                Scanning <b style="color:#7ec8e3">${S.wfTitle}</b> for models…</div>`;
+
+        let body;
+        if (sourceKey === WF_GRAPH_KEY) {
+            let graph = null;
+            try { graph = app.graph?.serialize?.(); } catch(_) {}
+            if (!graph) {
+                this.fileListEl.innerHTML =
+                    `<div style="padding:24px;color:#f87171">⚠ Could not read the current graph.</div>`;
+                return;
+            }
+            body = {workflow: graph};
+        } else {
+            // Fetch the template from ComfyUI itself, then hand it to the backend
+            try {
+                const r  = await fetch(`/templates/${encodeURIComponent(sourceKey)}.json`);
+                if (!r.ok) throw new Error(`template not found (HTTP ${r.status})`);
+                body = {workflow: await r.json()};
+            } catch(e) {
+                this.fileListEl.innerHTML =
+                    `<div style="padding:24px;color:#f87171">⚠ ${e.message}</div>`;
+                return;
+            }
+        }
+
+        try {
+            const d = await postJSON("/modeldownloader/workflow_models", body);
+            if (d.error) throw new Error(d.error);
+            S.workflowModelFiles = d.models || [];
+            this._renderWorkflowModels(S.workflowModelFiles);
+        } catch(e) {
+            this.fileListEl.innerHTML =
+                `<div style="padding:24px;color:#f87171">⚠ ${e.message}</div>`;
+        }
+    }
+
+    _renderWorkflowModels(files) {
+        this.fileListEl.innerHTML = "";
+        const cf       = S.catFilter;
+        const filtered = files.filter(f=>cf==="all" || f.category===cf);
+        const missing  = filtered.filter(f=>!f.downloaded);
+
+        const sticky = el("div",{
+            style:{padding:"10px 16px",background:"#10101c",borderBottom:"1px solid #1e1e2e",
+                display:"flex",alignItems:"center",gap:"10px",position:"sticky",top:"0",zIndex:"10"}});
+        sticky.appendChild(el("span",{style:{fontWeight:"700",color:"#7ec8e3",flex:"1",
+            fontSize:"13px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+            [`🧩 ${S.wfTitle}`]));
+        sticky.appendChild(el("span",{style:{fontSize:"11px",color:"#445",whiteSpace:"nowrap"}},
+            [`${filtered.length-missing.length}/${filtered.length} on disk`]));
+        if (missing.length) {
+            const allBtn = btn(`⬇ Download all missing (${missing.length})`,
+                {background:"#0f3460",border:"1px solid #1a5276",color:"#7ec8e3",
+                 whiteSpace:"nowrap"},
+                async()=>{
+                    allBtn.disabled = true;
+                    allBtn.textContent = "⏳ Starting…";
+                    for (const f of missing) {
+                        const active = Object.values(S.downloads).find(d=>
+                            d.repo_id===f.repo_id && d.filepath===f.path &&
+                            ["queued","downloading"].includes(d.status));
+                        if (active) continue;
+                        try { await this.startDownload(f); } catch(_) {}
+                    }
+                    this._rerender();
+                });
+            sticky.appendChild(allBtn);
+        }
+        this.fileListEl.appendChild(sticky);
+
+        if (!filtered.length) {
+            this.fileListEl.appendChild(el("div",{
+                style:{padding:"34px",color:"#555",textAlign:"center",lineHeight:"1.6"}},
+                [files.length
+                    ? "No models match the category filter."
+                    : "This workflow does not declare any model downloads."]));
+            if (!files.length)
+                this.fileListEl.appendChild(el("div",{
+                    style:{padding:"0 34px 30px",color:"#333",textAlign:"center",fontSize:"11px"}},
+                    ["Only templates that embed model metadata can be scanned. " +
+                     "Try 🔗 Paste Link for models you already have a URL for."]));
+            return;
+        }
+
+        const byCat = {};
+        for (const f of filtered) (byCat[f.category]=byCat[f.category]||[]).push(f);
+        const cats = [...CAT_ORDER.filter(c=>byCat[c]),
+                      ...Object.keys(byCat).filter(c=>!CAT_ORDER.includes(c))];
+        for (const cat of cats) {
+            const col = CAT_COLOR[cat]||"#888";
+            this.fileListEl.appendChild(el("div",{
+                style:{padding:"5px 16px 3px",fontSize:"10px",fontWeight:"700",color:col,
+                    background:"#0e0e1a",borderTop:"1px solid #1a1a2a",
+                    borderBottom:"1px solid #1a1a2a",marginTop:"6px",
+                    textTransform:"uppercase",letterSpacing:"0.5px"}},
+                [`${CAT_ICON[cat]||"📄"}  ${cat.replace(/_/g," ")}`]));
+            for (const f of byCat[cat]) this.fileListEl.appendChild(this._fileRow(f));
         }
     }
 
@@ -1778,7 +2029,9 @@ class ModelDownloaderDialog {
 
     /** Re-render the current view (file list or search results). */
     _rerender() {
-        if (S.githubWorkflowFiles) {
+        if (S.browseMode===MODE_WFMODELS && S.workflowModelFiles) {
+            this._renderWorkflowModels(S.workflowModelFiles);
+        } else if (S.githubWorkflowFiles) {
             this._renderGithubWorkflows(S.githubWorkflowFiles);
         } else if (S.selectedRepo && S.repoFiles[S.selectedRepo]) {
             this._renderFileList(S.repoFiles[S.selectedRepo]);
@@ -1854,6 +2107,8 @@ class ModelDownloaderDialog {
                 this._applyLocalFlags(S.repoFiles[S.selectedRepo]);
             if (S.fileSearchResults)
                 this._applyLocalFlagsToList(S.fileSearchResults);
+            if (S.workflowModelFiles)
+                this._applyLocalFlagsToList(S.workflowModelFiles);
             this._rerender();
             this._renderDlBar();
             return;
