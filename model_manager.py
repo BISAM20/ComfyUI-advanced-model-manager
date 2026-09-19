@@ -33,7 +33,6 @@ TRACKED_AUTHORS = ["Comfy-Org", "Kijai", "city96", "Lightricks"]
 
 # Specific HuggingFace repos added regardless of author
 TRACKED_SPECIFIC_REPOS = [
-    "Wan-AI/Wan2.1",
     # black-forest-labs repos
     "black-forest-labs/FLUX.1-dev",
     "black-forest-labs/FLUX.1-schnell",
@@ -380,79 +379,9 @@ _readme_cache: dict[str, dict] = {}
 _file_index: dict[str, list] = {}
 _file_index_lock = threading.Lock()
 
-# Background index build status
-_index_status: dict = {"total": 0, "done": 0, "running": False, "error": None}
-
-# Seconds between repos while indexing. Each repo costs ~2 HuggingFace calls
-# and the limit is 500 per 300s, so this cannot be lowered much without
-# provoking 429s on a several-hundred-repo build.
-_INDEX_DELAY = 1.5
-
-
 def _normalize(text: str) -> str:
     """Lowercase and replace all non-alphanumeric chars with space for fuzzy matching."""
     return re.sub(r'[^a-z0-9]', ' ', text.lower())
-
-
-def build_full_index(force: bool = False) -> None:
-    """Load file lists for tracked repos into _file_index (runs in a thread).
-
-    Paced at ~2 HF calls per repo to stay under the 500 req/300s limit, so a
-    full build takes minutes. Repos already indexed this session are skipped
-    unless force is set, which makes a repeat build near-instant.
-    """
-    global _index_status
-    if _index_status.get("running"):
-        return
-
-    try:
-        all_repos = list_all_repos()
-    except Exception as e:
-        _index_status = {"total": 0, "done": 0, "running": False,
-                         "error": str(e), "cancelled": False}
-        return
-
-    with _file_index_lock:
-        already = set(_file_index.keys())
-    todo = [r for r in all_repos
-            if force or r["id"] not in already]
-
-    _index_status = {
-        "total": len(todo), "done": 0, "running": True,
-        "error": None, "cancelled": False,
-        "skipped": len(all_repos) - len(todo),
-        "eta_seconds": int(len(todo) * _INDEX_DELAY),
-    }
-    try:
-        for repo in todo:
-            if _index_status.get("cancelled"):
-                break
-            try:
-                list_repo_files(repo["id"])   # populates _file_index as a side-effect
-            except Exception:
-                pass
-            _index_status["done"] += 1
-            _index_status["eta_seconds"] = int(
-                (len(todo) - _index_status["done"]) * _INDEX_DELAY)
-            if _index_status.get("cancelled"):
-                break
-            time.sleep(_INDEX_DELAY)
-    except Exception as e:
-        _index_status["error"] = str(e)
-    finally:
-        _index_status["running"] = False
-
-
-def cancel_index_build() -> bool:
-    """Ask a running index build to stop after the current repo."""
-    if _index_status.get("running"):
-        _index_status["cancelled"] = True
-        return True
-    return False
-
-
-def get_index_status() -> dict:
-    return dict(_index_status)
 
 
 def classify_file(filepath: str, repo_id: str,
@@ -618,19 +547,43 @@ def _author_last_modified(author: str) -> dict[str, str]:
         return {}
 
 
+def _sources_fingerprint() -> str:
+    """Identifies the tracked-source configuration that produced a cache."""
+    import hashlib
+    raw = "|".join(TRACKED_AUTHORS) + "##" + "|".join(sorted(TRACKED_SPECIFIC_REPOS))
+    return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+def _read_repo_cache() -> Optional[list[dict]]:
+    """Cached repo list, or None if missing, expired, or built from a
+    different tracked-source list.
+
+    The fingerprint check matters: editing TRACKED_AUTHORS otherwise has no
+    visible effect until the cache happens to expire, so a newly tracked
+    author silently fails to appear.
+    """
+    if not _REPO_CACHE_FILE.exists():
+        return None
+    try:
+        if time.time() - _REPO_CACHE_FILE.stat().st_mtime >= _REPO_CACHE_TTL:
+            return None
+        blob = json.loads(_REPO_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if isinstance(blob, list):        # pre-fingerprint cache — rebuild
+        return None
+    if not isinstance(blob, dict) or blob.get("fingerprint") != _sources_fingerprint():
+        return None
+    repos = blob.get("repos")
+    return repos if repos else None
+
+
 def list_all_repos(force: bool = False) -> list[dict]:
-    # Serve the disk cache only while it is still fresh. Without an expiry the
-    # list is frozen at whenever it was first built, so newly released models
-    # never appear unless Refresh is pressed by hand.
-    if not force and _REPO_CACHE_FILE.exists():
-        try:
-            age = time.time() - _REPO_CACHE_FILE.stat().st_mtime
-            if age < _REPO_CACHE_TTL:
-                cached = json.loads(_REPO_CACHE_FILE.read_text(encoding="utf-8"))
-                if cached:
-                    return cached
-        except Exception:
-            pass
+    if not force:
+        cached = _read_repo_cache()
+        if cached:
+            return cached
 
     all_repos: list[dict] = []
     seen: set[str] = set()
@@ -655,9 +608,21 @@ def list_all_repos(force: bool = False) -> list[dict]:
     # Sort by lastModified descending (blank strings sort last)
     all_repos.sort(key=lambda r: r.get("lastModified") or "", reverse=True)
 
-    # Persist to disk cache
+    # Don't overwrite a good cache with a half-built one: if an author listing
+    # failed (network hiccup, rate limit) we would otherwise persist a list
+    # that is silently missing everything that author owns.
+    expected_authors = {a for a in TRACKED_AUTHORS}
+    got_authors = {r["author"] for r in all_repos}
+    if expected_authors - got_authors:
+        missing = ", ".join(sorted(expected_authors - got_authors))
+        print(f"[ModelDownloader] Skipping cache write — no repos returned for: {missing}")
+        return all_repos
+
     try:
-        _REPO_CACHE_FILE.write_text(json.dumps(all_repos, ensure_ascii=False), encoding="utf-8")
+        _REPO_CACHE_FILE.write_text(
+            json.dumps({"fingerprint": _sources_fingerprint(), "repos": all_repos},
+                       ensure_ascii=False),
+            encoding="utf-8")
     except Exception:
         pass
 
@@ -732,13 +697,18 @@ def get_repo_file_sizes(repo_id: str) -> dict[str, int]:
         return {}
 
 
+# Most repos to open during one file search, so a search stays seconds not minutes
+_SEARCH_REPO_LIMIT = 40
+
+
 def search_files_across_repos(query: str) -> list[dict]:
+    """Search filenames across repos, loading file lists on demand.
+
+    There is deliberately no prebuilt index. Instead the query first narrows
+    the candidate repos by name, so a search opens a handful of relevant repos
+    rather than every tracked one. Repos whose file list was already loaded
+    (by browsing, or an earlier search) are searched for free.
     """
-    Search filename/path across all repos.
-    Repos not yet loaded are loaded on demand (expensive first call, cached after).
-    Returns list of file dicts with repo context.
-    """
-    # Split query into words; normalize so commas/underscores/dots don't matter
     words = [w for w in _normalize(query).split() if w]
     if not words:
         return []
@@ -748,28 +718,35 @@ def search_files_across_repos(query: str) -> list[dict]:
         norm = _normalize(raw)
         return all(w in norm or w in raw for w in words)
 
-    results = []
-
-    # Search already-cached repos first
+    results: list[dict] = []
     with _file_index_lock:
-        cached_ids = set(_file_index.keys())
+        cached = dict(_file_index)
+    for files in cached.values():
+        results.extend(dict(f) for f in files if matches(f))
 
-    for rid, files in list(_file_index.items()):
-        for f in files:
-            if matches(f):
-                results.append(dict(f))
+    # Rank uncached repos by how well their name matches the query, so
+    # "wan fp8" opens the Wan repos instead of all 300.
+    candidates: list[tuple[int, str]] = []
+    for repo in list_all_repos():
+        rid = repo["id"]
+        if rid in cached:
+            continue
+        hay = _normalize(f"{rid} {repo.get('model_family') or ''}")
+        score = sum(1 for w in words if w in hay)
+        if score:
+            candidates.append((score, rid))
+    candidates.sort(key=lambda c: -c[0])
+    todo = [rid for _score, rid in candidates[:_SEARCH_REPO_LIMIT]]
 
-    # Load remaining uncached repos — all of them if index wasn't pre-built
-    all_repos = list_all_repos()
-    uncached  = [r["id"] for r in all_repos if r["id"] not in cached_ids]
-    for repo_id in uncached:
-        try:
-            files = list_repo_files(repo_id)
-            for f in files:
-                if matches(f):
-                    results.append(dict(f))
-        except Exception:
-            pass
+    if todo:
+        def load(repo_id: str) -> list[dict]:
+            try:
+                return [dict(f) for f in list_repo_files(repo_id) if matches(f)]
+            except Exception:
+                return []
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for found in pool.map(load, todo):
+                results.extend(found)
 
     return results
 

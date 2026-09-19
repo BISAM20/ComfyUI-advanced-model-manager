@@ -160,8 +160,8 @@ Search also matches **old folder aliases**, so habits still work: typing `unet` 
 ### Category Filter
 Use the **All Categories** dropdown to filter the repo list and search results to a specific type: Checkpoints, LoRAs, VAE, Text Encoders, Upscalers, etc.
 
-### Refresh / Build Index
-Click **Refresh** to rebuild the local file index. The index is what makes instant cross-repo search possible. Progress is shown live. Once built, search is instant even across hundreds of repos.
+### Refresh
+Click **Refresh** to re-fetch the repo list from HuggingFace, newest first. It takes a few seconds. The list also refreshes itself automatically every six hours, so newly released models show up without being asked for.
 
 ---
 
