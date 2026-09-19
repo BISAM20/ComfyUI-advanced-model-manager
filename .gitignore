@@ -5,3 +5,4 @@ __pycache__/
 
 # Generated at runtime by model_manager.list_all_repos()
 .repo_cache.json
+.repo_cache_v2.json

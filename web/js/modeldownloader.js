@@ -692,13 +692,17 @@ class ModelDownloaderDialog {
                 fetch(`/modeldownloader/repos${force ? "?force=1" : ""}`),
                 fetch("/modeldownloader/local_models"),
             ]);
-            S.repos      = await rr.json();
+            const repoData = await rr.json();
+            if (!Array.isArray(repoData))
+                throw new Error("unexpected /repos response — restart ComfyUI to load the current backend");
+            S.repos      = repoData;
             S.localModels = await lr.json();
             if (force) S.repoFiles={};
             this.leftStatus.style.display="none";
             this._renderLeft();
         } catch(e) {
-            this.leftStatus.textContent="⚠ Server unreachable.";
+            this.leftStatus.textContent="⚠ "+(e.message||"Server unreachable.");
+            this.leftStatus.style.display="block";
         }
     }
 

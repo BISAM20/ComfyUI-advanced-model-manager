@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-_REPO_CACHE_FILE = Path(__file__).parent / ".repo_cache.json"
+# Versioned filename: the v1 cache was a bare list, this one is an object.
+# Sharing a name meant an older still-running process would read this file
+# and hand the frontend an object where it expects an array.
+_REPO_CACHE_FILE = Path(__file__).parent / ".repo_cache_v2.json"
 # How long the cached repo list stays usable before it is rebuilt from HF
 _REPO_CACHE_TTL = 6 * 3600
 
