@@ -702,29 +702,66 @@ class ModelDownloaderDialog {
         }
     }
 
+    /**
+     * Refresh the repo list, then build the cross-repo search index behind it.
+     *
+     * The index is rate-limited to ~1.5s per repo by HuggingFace's API limits,
+     * so a full build runs for several minutes. It must never block the
+     * button or the panel — only "Search Files" depends on it. Progress goes
+     * to the status line, with a way to stop it.
+     */
     async _refreshAndIndex() {
         this.refreshBtn.disabled=true;
         this.refreshBtn.textContent="⟳ Refreshing…";
-        await this.loadAll(true);
-        // Start full index build in background
-        this.refreshBtn.textContent="⟳ Indexing…";
+        try {
+            await this.loadAll(true);
+        } finally {
+            // Repo list is up to date — hand the panel straight back
+            this.refreshBtn.disabled=false;
+            this.refreshBtn.textContent="⟳ Refresh";
+        }
+        this._startIndexBuild();
+    }
+
+    async _startIndexBuild() {
+        if (this._indexPoll) return;
         await fetch("/modeldownloader/build_index",{method:"POST"}).catch(()=>{});
-        // Poll until done
-        const poll = setInterval(async()=>{
+
+        const mins = s => s>=60 ? `${Math.ceil(s/60)} min` : `${Math.max(s,1)}s`;
+        const show = (text, withStop) => {
+            this.leftStatus.innerHTML="";
+            this.leftStatus.style.display="block";
+            this.leftStatus.appendChild(el("div",{style:{fontSize:"11px",color:"#667"}},[text]));
+            if (withStop) {
+                const stop=el("div",{
+                    style:{marginTop:"4px",fontSize:"10px",color:"#f87171",cursor:"pointer"},
+                    onclick:async()=>{
+                        stop.textContent="stopping…";
+                        await fetch("/modeldownloader/cancel_index",{method:"POST"}).catch(()=>{});
+                    },
+                },["✕ stop indexing"]);
+                this.leftStatus.appendChild(stop);
+            }
+        };
+
+        this._indexPoll = setInterval(async()=>{
+            let s;
             try {
-                const r=await fetch("/modeldownloader/index_status");
-                const s=await r.json();
-                if (s.running) {
-                    this.refreshBtn.textContent=`⟳ ${s.done}/${s.total} repos`;
-                } else {
-                    clearInterval(poll);
-                    this.refreshBtn.disabled=false;
-                    this.refreshBtn.textContent="⟳ Refresh";
-                    this.leftStatus.textContent=`Index complete — ${s.total} repos indexed`;
-                    this.leftStatus.style.display="block";
-                    setTimeout(()=>{ this.leftStatus.style.display="none"; },3000);
-                }
-            } catch(_){ clearInterval(poll); this.refreshBtn.disabled=false; this.refreshBtn.textContent="⟳ Refresh"; }
+                s = await (await fetch("/modeldownloader/index_status")).json();
+            } catch(_) {
+                clearInterval(this._indexPoll); this._indexPoll=null;
+                this.leftStatus.style.display="none";
+                return;
+            }
+            if (s.running) {
+                show(`Indexing for search — ${s.done}/${s.total} repos · ~${mins(s.eta_seconds||0)} left`, true);
+            } else {
+                clearInterval(this._indexPoll); this._indexPoll=null;
+                show(s.cancelled ? "Indexing stopped." :
+                     s.error     ? `Indexing failed: ${s.error}` :
+                                   `Search index ready — ${s.done} repos.`, false);
+                setTimeout(()=>{ this.leftStatus.style.display="none"; },4000);
+            }
         },1000);
     }
 

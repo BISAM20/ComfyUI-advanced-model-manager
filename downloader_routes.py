@@ -26,6 +26,7 @@ from .model_manager import (
     delete_local_model,
     build_full_index,
     get_index_status,
+    cancel_index_build,
     start_move,
     get_move,
     cancel_move,
@@ -71,11 +72,18 @@ async def handle_local_models(request: web.Request) -> web.Response:
 
 
 async def handle_build_index(request: web.Request) -> web.Response:
-    """POST /modeldownloader/build_index — start background full-index build."""
+    """POST /modeldownloader/build_index — start background full-index build.
+    Pass ?force=1 to re-index repos already cached this session."""
     import threading
-    t = threading.Thread(target=build_full_index, daemon=True)
+    force = request.rel_url.query.get("force", "0") == "1"
+    t = threading.Thread(target=build_full_index, args=(force,), daemon=True)
     t.start()
     return web.json_response({"ok": True, "message": "Index build started"})
+
+
+async def handle_cancel_index(request: web.Request) -> web.Response:
+    """POST /modeldownloader/cancel_index — stop a running index build."""
+    return web.json_response({"cancelled": cancel_index_build()})
 
 
 async def handle_index_status(request: web.Request) -> web.Response:
@@ -410,6 +418,7 @@ def setup_routes():
         app.router.add_delete("/modeldownloader/move/{task_id}",              handle_cancel_move)
         app.router.add_get   ("/modeldownloader/folder_targets",              handle_folder_targets)
         app.router.add_post  ("/modeldownloader/build_index",                handle_build_index)
+        app.router.add_post  ("/modeldownloader/cancel_index",               handle_cancel_index)
         app.router.add_get   ("/modeldownloader/index_status",               handle_index_status)
 
         print("[ModelDownloader] Routes registered.")

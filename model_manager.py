@@ -383,32 +383,72 @@ _file_index_lock = threading.Lock()
 # Background index build status
 _index_status: dict = {"total": 0, "done": 0, "running": False, "error": None}
 
+# Seconds between repos while indexing. Each repo costs ~2 HuggingFace calls
+# and the limit is 500 per 300s, so this cannot be lowered much without
+# provoking 429s on a several-hundred-repo build.
+_INDEX_DELAY = 1.5
+
 
 def _normalize(text: str) -> str:
     """Lowercase and replace all non-alphanumeric chars with space for fuzzy matching."""
     return re.sub(r'[^a-z0-9]', ' ', text.lower())
 
 
-def build_full_index() -> None:
-    """Load file lists for ALL tracked repos into _file_index (runs in a thread)."""
+def build_full_index(force: bool = False) -> None:
+    """Load file lists for tracked repos into _file_index (runs in a thread).
+
+    Paced at ~2 HF calls per repo to stay under the 500 req/300s limit, so a
+    full build takes minutes. Repos already indexed this session are skipped
+    unless force is set, which makes a repeat build near-instant.
+    """
     global _index_status
     if _index_status.get("running"):
         return
-    _index_status = {"total": 0, "done": 0, "running": True, "error": None}
+
     try:
         all_repos = list_all_repos()
-        _index_status["total"] = len(all_repos)
-        for repo in all_repos:
+    except Exception as e:
+        _index_status = {"total": 0, "done": 0, "running": False,
+                         "error": str(e), "cancelled": False}
+        return
+
+    with _file_index_lock:
+        already = set(_file_index.keys())
+    todo = [r for r in all_repos
+            if force or r["id"] not in already]
+
+    _index_status = {
+        "total": len(todo), "done": 0, "running": True,
+        "error": None, "cancelled": False,
+        "skipped": len(all_repos) - len(todo),
+        "eta_seconds": int(len(todo) * _INDEX_DELAY),
+    }
+    try:
+        for repo in todo:
+            if _index_status.get("cancelled"):
+                break
             try:
                 list_repo_files(repo["id"])   # populates _file_index as a side-effect
             except Exception:
                 pass
             _index_status["done"] += 1
-            time.sleep(1.5)   # ~2 HF API calls per repo; stay well under 500 req/300s limit
+            _index_status["eta_seconds"] = int(
+                (len(todo) - _index_status["done"]) * _INDEX_DELAY)
+            if _index_status.get("cancelled"):
+                break
+            time.sleep(_INDEX_DELAY)
     except Exception as e:
         _index_status["error"] = str(e)
     finally:
         _index_status["running"] = False
+
+
+def cancel_index_build() -> bool:
+    """Ask a running index build to stop after the current repo."""
+    if _index_status.get("running"):
+        _index_status["cancelled"] = True
+        return True
+    return False
 
 
 def get_index_status() -> dict:
