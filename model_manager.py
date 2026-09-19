@@ -489,26 +489,38 @@ def url_headers(url: str) -> dict:
 
 
 def list_author_repos(author: str) -> list[dict]:
-    if not HF_AVAILABLE:
-        return []
-    api = HfApi()
+    """Every repo an author owns, newest first, via the HuggingFace REST API.
+
+    Deliberately uses requests rather than huggingface_hub. When that package
+    is missing this used to return [] for every author, so the panel silently
+    fell back to the hardcoded pin list — authors with no pinned repos simply
+    vanished, with nothing in the log to explain it.
+    """
     try:
-        models = list(api.list_models(author=author, sort="lastModified",
-                                      direction=-1, limit=100))
-        return [
-            {
-                "id":           m.id,
-                "name":         m.id.split("/", 1)[-1],
-                "author":       author,
-                "lastModified": str(getattr(m, "last_modified", "") or ""),
-                "model_family": repo_taxonomy(m.id),
-                "specific":     False,
-            }
-            for m in models
-        ]
+        resp = requests.get(
+            f"https://huggingface.co/api/models?author={author}"
+            f"&sort=lastModified&direction=-1&limit=1000",
+            headers=_hf_headers(), timeout=25)
+        resp.raise_for_status()
+        models = resp.json()
     except Exception as e:
         print(f"[ModelDownloader] Error listing repos for {author}: {e}")
         return []
+
+    result = []
+    for m in models:
+        rid = m.get("modelId") or m.get("id")
+        if not rid or "/" not in rid:
+            continue
+        result.append({
+            "id":           rid,
+            "name":         rid.split("/", 1)[-1],
+            "author":       author,
+            "lastModified": str(m.get("lastModified") or ""),
+            "model_family": repo_taxonomy(rid),
+            "specific":     False,
+        })
+    return result
 
 
 def get_specific_repo_info(repo_id: str, last_mod: str = "") -> dict:
@@ -632,29 +644,49 @@ def list_all_repos(force: bool = False) -> list[dict]:
     return all_repos
 
 
+# repo_id -> {path: size}, filled by _hf_repo_tree so sizes need no extra call
+_repo_size_cache: dict[str, dict] = {}
+
+
+def _hf_repo_tree(repo_id: str, revision: str = "main") -> Optional[list[dict]]:
+    """File list for a repo via the REST API. None means the call failed.
+
+    Returns size alongside each path, so listing files and fetching their
+    sizes costs one request instead of two.
+    """
+    url = f"https://huggingface.co/api/models/{repo_id}/tree/{revision}?recursive=true"
+    for attempt in (1, 2):
+        try:
+            resp = requests.get(url, headers=_hf_headers(), timeout=30)
+            if resp.status_code == 429 and attempt == 1:
+                wait = int(resp.headers.get("Retry-After") or 30)
+                print(f"[ModelDownloader] Rate limited on {repo_id}, retrying after {wait}s…")
+                time.sleep(min(wait, 60))
+                continue
+            resp.raise_for_status()
+            items = resp.json()
+        except Exception as e:
+            if attempt == 2:
+                print(f"[ModelDownloader] Error listing files for {repo_id}: {e}")
+                return None
+            continue
+
+        files = []
+        for item in items if isinstance(items, list) else []:
+            if item.get("type") != "file":
+                continue
+            size = (item.get("lfs") or {}).get("size") or item.get("size")
+            files.append({"path": item.get("path", ""), "size": size})
+        _repo_size_cache[repo_id] = {f["path"]: f["size"] for f in files}
+        return files
+    return None
+
+
 def list_repo_files(repo_id: str, include_workflows: bool = False) -> list[dict]:
-    if not HF_AVAILABLE:
+    tree = _hf_repo_tree(repo_id)
+    if tree is None:
         return []
-    api = HfApi()
-    try:
-        all_files = list(api.list_repo_files(repo_id))
-    except Exception as e:
-        err_str = str(e)
-        if "429" in err_str:
-            # Extract retry-after seconds if present, default to 60
-            import re as _re
-            m = _re.search(r"Retry after (\d+) seconds", err_str)
-            wait = int(m.group(1)) if m else 60
-            print(f"[ModelDownloader] Rate limited on {repo_id}, retrying after {wait}s…")
-            time.sleep(wait)
-            try:
-                all_files = list(api.list_repo_files(repo_id))
-            except Exception as e2:
-                print(f"[ModelDownloader] Error listing files for {repo_id} after retry: {e2}")
-                return []
-        else:
-            print(f"[ModelDownloader] Error listing files for {repo_id}: {e}")
-            return []
+    all_files = [f["path"] for f in tree]
 
     readme_hints = fetch_readme_hints(repo_id)
     result = []
@@ -685,19 +717,14 @@ def list_repo_files(repo_id: str, include_workflows: bool = False) -> list[dict]
 
 
 def get_repo_file_sizes(repo_id: str) -> dict[str, int]:
-    if not HF_AVAILABLE:
+    """Sizes keyed by path. Served from the tree call list_repo_files made."""
+    cached = _repo_size_cache.get(repo_id)
+    if cached is not None:
+        return {p: s for p, s in cached.items() if s is not None}
+    tree = _hf_repo_tree(repo_id)
+    if tree is None:
         return {}
-    api = HfApi()
-    try:
-        info = api.repo_info(repo_id, files_metadata=True)
-        return {
-            s.rfilename: s.size
-            for s in (info.siblings or [])
-            if getattr(s, "size", None) is not None
-        }
-    except Exception as e:
-        print(f"[ModelDownloader] Error getting file sizes for {repo_id}: {e}")
-        return {}
+    return {f["path"]: f["size"] for f in tree if f["size"] is not None}
 
 
 # Most repos to open during one file search, so a search stays seconds not minutes
