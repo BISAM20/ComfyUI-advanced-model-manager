@@ -9,11 +9,14 @@ import threading
 import time
 import uuid
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
 _REPO_CACHE_FILE = Path(__file__).parent / ".repo_cache.json"
+# How long the cached repo list stays usable before it is rebuilt from HF
+_REPO_CACHE_TTL = 6 * 3600
 
 try:
     from huggingface_hub import HfApi
@@ -23,12 +26,13 @@ except ImportError:
 
 # ── Tracked sources ───────────────────────────────────────────────────────────
 
-# Authors whose FULL repo list is fetched
-TRACKED_AUTHORS = ["Comfy-Org", "Kijai", "city96"]
+# Authors whose FULL repo list is fetched, newest first. Tracking the author
+# rather than pinning individual repos means new releases (LTX-2.5 and
+# whatever follows it) appear on their own without a code change.
+TRACKED_AUTHORS = ["Comfy-Org", "Kijai", "city96", "Lightricks"]
 
 # Specific HuggingFace repos added regardless of author
 TRACKED_SPECIFIC_REPOS = [
-    "Lightricks/LTX-2.3",
     "Wan-AI/Wan2.1",
     # black-forest-labs repos
     "black-forest-labs/FLUX.1-dev",
@@ -535,11 +539,9 @@ def list_author_repos(author: str) -> list[dict]:
         return []
 
 
-def get_specific_repo_info(repo_id: str) -> dict:
+def get_specific_repo_info(repo_id: str, last_mod: str = "") -> dict:
     author, name = repo_id.split("/", 1)
-    # Try to get real lastModified
-    last_mod = ""
-    if HF_AVAILABLE:
+    if not last_mod and HF_AVAILABLE:
         try:
             info = HfApi().repo_info(repo_id)
             last_mod = str(getattr(info, "last_modified", "") or "")
@@ -555,11 +557,38 @@ def get_specific_repo_info(repo_id: str) -> dict:
     }
 
 
+def _author_last_modified(author: str) -> dict[str, str]:
+    """lastModified for every repo an author owns, in a single API call.
+
+    Pinned repos are concentrated in a handful of authors, so listing each
+    author once replaces one repo_info() round trip per pinned repo — the
+    difference between a few seconds and a few minutes on a refresh.
+    """
+    try:
+        resp = requests.get(
+            f"https://huggingface.co/api/models?author={author}&limit=1000",
+            headers=_hf_headers(), timeout=20)
+        resp.raise_for_status()
+        return {
+            (m.get("modelId") or m.get("id")): str(m.get("lastModified") or "")
+            for m in resp.json()
+            if m.get("modelId") or m.get("id")
+        }
+    except Exception:
+        return {}
+
+
 def list_all_repos(force: bool = False) -> list[dict]:
-    # Return cached result unless a forced refresh is requested
+    # Serve the disk cache only while it is still fresh. Without an expiry the
+    # list is frozen at whenever it was first built, so newly released models
+    # never appear unless Refresh is pressed by hand.
     if not force and _REPO_CACHE_FILE.exists():
         try:
-            return json.loads(_REPO_CACHE_FILE.read_text(encoding="utf-8"))
+            age = time.time() - _REPO_CACHE_FILE.stat().st_mtime
+            if age < _REPO_CACHE_TTL:
+                cached = json.loads(_REPO_CACHE_FILE.read_text(encoding="utf-8"))
+                if cached:
+                    return cached
         except Exception:
             pass
 
@@ -570,10 +599,19 @@ def list_all_repos(force: bool = False) -> list[dict]:
             if r["id"] not in seen:
                 all_repos.append(r)
                 seen.add(r["id"])
-    for repo_id in TRACKED_SPECIFIC_REPOS:
-        if repo_id not in seen:
-            all_repos.append(get_specific_repo_info(repo_id))
-            seen.add(repo_id)
+
+    # One listing call per distinct author covers every pinned repo
+    pending = [rid for rid in TRACKED_SPECIFIC_REPOS if rid not in seen and "/" in rid]
+    authors = sorted({rid.split("/", 1)[0] for rid in pending})
+    last_mod: dict[str, str] = {}
+    if authors:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for found in pool.map(_author_last_modified, authors):
+                last_mod.update(found)
+    for repo_id in pending:
+        all_repos.append(get_specific_repo_info(repo_id, last_mod.get(repo_id, "")))
+        seen.add(repo_id)
+
     # Sort by lastModified descending (blank strings sort last)
     all_repos.sort(key=lambda r: r.get("lastModified") or "", reverse=True)
 
