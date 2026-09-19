@@ -198,10 +198,12 @@ async def handle_workflow_models(request: web.Request) -> web.Response:
     loop     = asyncio.get_event_loop()
 
     if workflow is None and url:
-        if url.startswith("/"):
+        is_local_template = url.startswith("/")
+        if is_local_template:
             url = f"http://127.0.0.1:{request.url.port or 8188}{url}"
         try:
-            workflow = await loop.run_in_executor(None, fetch_workflow, url)
+            workflow = await loop.run_in_executor(
+                None, fetch_workflow, url, is_local_template)
         except Exception as e:
             return web.json_response({"error": f"Could not load workflow: {e}"}, status=400)
 
