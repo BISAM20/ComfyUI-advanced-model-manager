@@ -5,7 +5,9 @@ ComfyUI templates (and workflows saved from them) annotate loader nodes with a
 `properties.models` list holding the download URL and target folder for each
 file. This module pulls those out so they can be downloaded in one go.
 """
+import ipaddress
 import json
+import socket
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -121,8 +123,22 @@ def _fill_sizes(entries: list[dict]) -> None:
         list(pool.map(probe, entries))
 
 
-def fetch_workflow(url: str) -> dict:
+def _is_public_host(hostname: str) -> bool:
+    """Reject hostnames that resolve to loopback/private/link-local addresses
+    so a workflow URL can't be used to reach internal network resources
+    (e.g. the cloud metadata endpoint at 169.254.169.254)."""
+    try:
+        addrs = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
+    except socket.gaierror:
+        return False
+    return bool(addrs) and all(ipaddress.ip_address(addr).is_global for addr in addrs)
+
+
+def fetch_workflow(url: str, allow_private: bool = False) -> dict:
     """Load a workflow JSON from a URL (a template path or any http(s) link)."""
+    hostname = urlparse(url).hostname or ""
+    if not allow_private and not _is_public_host(hostname):
+        raise ValueError(f"Refusing to fetch workflow from non-public host: {hostname}")
     resp = requests.get(url, headers={"User-Agent": "ComfyUI-ModelDownloader/1.0",
                                       **url_headers(url)}, timeout=20)
     resp.raise_for_status()
