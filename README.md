@@ -11,12 +11,12 @@ A powerful model browser, downloader and manager built directly into ComfyUI. Br
 | 🧩 **Workflow models** | Pick a ComfyUI template (or your open graph) and download every model it needs in one click |
 | 🔗 **Paste a link** | Paste any HuggingFace, GitHub or direct URL — the file type is recognised and it lands in the right folder |
 | ➜ **Move files** | Landed in the wrong folder? Move it from the Downloaded tab, with a searchable folder picker |
-| 🔍 **Instant cross-repo search** | Type any word and find matching files across ALL repos simultaneously |
+| 🔍 **Cross-repo file search** | Find a filename across repos in seconds — no index to build first |
 | 📁 **Repository browser** | Repos grouped by author with model-family badges (WanVideo, Flux, LTX, etc.) |
 | ⬇️ **One-click download** | Files go straight to the correct ComfyUI model subfolder automatically |
 | 📋 **Workflow browser** | Browse and download ComfyOrg + Kijai example workflow JSONs from GitHub |
 | 💾 **Downloaded tab** | See every model you have installed, delete files, open folders |
-| 🌐 **HuggingFace live search** | Search HuggingFace directly to discover new repos not in the index |
+| 🌐 **HuggingFace live search** | Search HuggingFace directly to discover repos that aren't tracked |
 | 📊 **Node widget** | Shows live model counts (Diffusion, Text Encoders, VAE, LoRAs) on the graph node |
 | ⌨️ **Keyboard shortcut** | `Ctrl + Shift + M` to open/close the panel from anywhere |
 
@@ -24,22 +24,43 @@ A powerful model browser, downloader and manager built directly into ComfyUI. Br
 
 ## 🖼️ Screenshots
 
-### Browse Repositories
-All HuggingFace repos listed in the left panel, grouped by author and tagged by model family. Click any repo to load its files.
+### Browse Repositories — newest models first
+Every tracked HuggingFace author, grouped and tagged by model family. The list is sorted newest-first and refreshes itself, so new releases (here, the whole LTX-2.5 family) appear on their own.
 
 ![Browse Repositories](docs/screenshot_browse.png)
 
 ---
 
 ### View & Download Files
-Select a repo to see all its files with sizes and download status. Files already on disk are marked. Click **Download** to save a file directly to the correct ComfyUI folder.
+Pick a repo to see each file with its size, its path inside the repo, and the ComfyUI folder it will land in. Files already on disk are marked.
 
 ![View and Download Files](docs/screenshot_files.png)
 
 ---
 
-### Instant Search Across All Repos
-Type any word in the search box — results appear instantly across **all** repos. Results are grouped by repo in the left panel. Matching files are shown on the right. Case-insensitive, multi-word, ignores underscores and dashes.
+### 🧩 Workflow Models — everything a template needs, in one click
+Choose a ComfyUI template (or scan the graph you have open) and the tool reads the download links embedded in it. Models are grouped by type with sizes and destinations, and **Download all missing** fetches the ones you don't have.
+
+![Workflow Models](docs/screenshot_workflow_models.png)
+
+---
+
+### 🔗 Paste a Link
+Paste HuggingFace, GitHub or direct URLs — one per line. Each is resolved to a file, its size looked up and its destination detected, with a dropdown to override. Files already on disk are marked and skipped; a whole repo link offers to open it instead.
+
+![Paste a Link](docs/screenshot_paste_link.png)
+
+---
+
+### ➜ Move a File to the Right Folder
+Downloaded into the wrong place? Move it from the **Downloaded** tab. The picker has a search box, so you type instead of scrolling — and it matches old folder aliases too, so `unet` finds `diffusion_models`.
+
+![Move files](docs/screenshot_move.png)
+
+---
+
+### Search Across All Repos
+Search filenames across repos without any prebuilt index — the query narrows the candidate repos first, so results come back in seconds.
 
 ![Cross-Repo Search](docs/screenshot_search.png)
 
@@ -98,15 +119,15 @@ Recognised link types:
 You can paste **several links at once**, one per line. Every row has a destination dropdown, so if the auto-detection guesses wrong you can correct it before downloading. Files already on disk are marked and skipped.
 
 ### Searching Across All Repos
-Just type in the search box — no button needed. The tool searches every file in every repo:
-- `animate` → finds all files with "animate" in the name across all repos
+The box next to **Browse by** filters whatever is on screen as you type. To search *filenames* across repos, type a query and click **🔍 Search Files**:
+- `ltx 2.5` → every LTX-2.5 file, grouped by repo
 - `wan fp8` → finds Wan FP8 files even if the name uses underscores like `Wan_fp8`
-- `ltx lora` → multi-word search, both words must be present
+- `ltx lora` → multi-word, both words must be present, order doesn't matter
 
-Search is **case-insensitive** and normalises underscores, dashes and dots to spaces.
+Search is **case-insensitive** and normalises underscores, dashes and dots to spaces. There is no index to build — the query narrows the candidate repos by name first, then loads only those file lists, so results arrive in seconds.
 
 ### HuggingFace Live Search
-Click **🌐 Search HuggingFace** to search the live HuggingFace index for repos not already in the local index. Results are clickable and load their file list exactly like local repos.
+Click **🌐 Search HuggingFace** to search HuggingFace live for repos that aren't in the tracked list. Results are clickable and load their file list exactly like local repos.
 
 ### Workflow Models Tab (🧩)
 
